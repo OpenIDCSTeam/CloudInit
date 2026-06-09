@@ -49,8 +49,13 @@ class VMStatus:
     def _collect_disk(self):
         """采集磁盘信息"""
         try:
+            import os
             import platform
-            disk_path = 'C:\\' if platform.system() == 'Windows' else '/'
+            if platform.system() == 'Windows':
+                # 使用系统盘环境变量，兼容性最佳
+                disk_path = os.environ.get('SystemDrive', 'C:') + os.sep
+            else:
+                disk_path = '/'
             disk_usage = psutil.disk_usage(disk_path)
             self.vm_status.hdd_total = int(disk_usage.total / (1024 * 1024))
             self.vm_status.hdd_usage = int(disk_usage.used / (1024 * 1024))

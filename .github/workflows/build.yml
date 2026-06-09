@@ -1,4 +1,4 @@
-name: Build CloudInit
+name: Build & Release CloudInit
 
 on:
   push:
@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
+    inputs:
+      version:
+        description: '发布版本号 (例如 v1.0.0)'
+        required: true
+        type: string
 
 jobs:
   build:
@@ -51,7 +56,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('pipconfig.txt') }}
+        key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('requirements.txt') }}
         restore-keys: |
           ${{ runner.os }}-pip-${{ matrix.python-version }}-
           ${{ runner.os }}-pip-
@@ -62,24 +67,18 @@ jobs:
         pip install pyinstaller
         pip install netifaces requests GPUtil psutil py-cpuinfo urllib3 loguru
 
-    - name: Build with PyInst (Windows)
-      if: matrix.os == 'windows-latest' || matrix.os == 'windows-2019'
+    - name: Build with PyInstaller
       run: |
-        pyinstaller --onefile --name CloudInit${{ matrix.ext }} --hidden-import loguru CloudInit.py
-
-    - name: Build with PyInst (Linux/Mac)
-      if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest'
-      run: |
-        pyinstaller --onefile --name CloudInit${{ matrix.ext }} --hidden-import loguru CloudInit.py
+        pyinstaller CloudInit.spec
 
     - name: Create artifact (Windows)
-      if: matrix.os == 'windows-latest' || matrix.os == 'windows-2019'
+      if: runner.os == 'Windows'
       run: |
         mkdir dist-artifact
         copy dist\CloudInit${{ matrix.ext }} dist-artifact\
 
     - name: Create artifact (Linux/Mac)
-      if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest'
+      if: runner.os != 'Windows'
       run: |
         mkdir -p dist-artifact
         cp dist/CloudInit${{ matrix.ext }} dist-artifact/
@@ -91,10 +90,11 @@ jobs:
         path: dist-artifact/
         retention-days: 30
 
-  create-release:
+  # Push 自动发布到 beta release
+  release-beta:
     needs: build
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'push'
 
     steps:
     - name: Checkout code
@@ -108,7 +108,18 @@ jobs:
     - name: Display structure of downloaded files
       run: ls -R artifacts
 
-    - name: Create Release
+    - name: Delete existing beta tag
+      run: |
+        git push origin :refs/tags/beta || true
+
+    - name: Create/Update beta tag
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag -fa beta -m "Beta build from ${{ github.sha }}"
+        git push origin beta --force
+
+    - name: Create/Update Beta Release
       uses: softprops/action-gh-release@v1
       with:
         files: |
@@ -116,6 +127,56 @@ jobs:
           artifacts/cloudinit-macos/CloudInit
           artifacts/cloudinit-win10/CloudInit.exe
           artifacts/cloudinit-win7/CloudInit.exe
+        tag_name: beta
+        name: Beta Build (Latest)
+        body: |
+          🚧 **自动构建的 Beta 版本**
+          
+          提交: ${{ github.sha }}
+          分支: ${{ github.ref_name }}
+          时间: ${{ github.event.head_commit.timestamp }}
+          
+          > 此版本随每次 push 自动更新，仅供测试使用。
+        draft: false
+        prerelease: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 手动触发发布正式版本
+  release-stable:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Display structure of downloaded files
+      run: ls -R artifacts
+
+    - name: Create version tag
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag -a ${{ github.event.inputs.version }} -m "Release ${{ github.event.inputs.version }}"
+        git push origin ${{ github.event.inputs.version }}
+
+    - name: Create Stable Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          artifacts/cloudinit-linux/CloudInit
+          artifacts/cloudinit-macos/CloudInit
+          artifacts/cloudinit-win10/CloudInit.exe
+          artifacts/cloudinit-win7/CloudInit.exe
+        tag_name: ${{ github.event.inputs.version }}
+        name: Release ${{ github.event.inputs.version }}
         draft: false
         prerelease: false
       env:

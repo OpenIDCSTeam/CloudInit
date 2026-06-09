@@ -65,7 +65,7 @@ jobs:
 
     - name: Build with PyInst
       run: |
-        pyinstaller --onefile --name CloudInit${{ matrix.ext }} --hidden-import loguru CloudInit.py
+        pyinstaller CloudInit.spec
 
     - name: Create artifact (Windows)
       if: matrix.os == 'windows-latest' || matrix.os == 'windows-2019'

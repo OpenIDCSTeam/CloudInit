@@ -19,6 +19,24 @@ from loguru import logger
 
 from .CoreConfig import config
 
+# GitHub下载代理列表，按优先级顺序尝试
+GITHUB_PROXIES = [
+    "https://github.com/",
+    "https://github.524228.xyz/",
+    "https://ghfast.top/https://github.com/",
+    "https://ghproxy.net/https://github.com/",
+    "https://gh-proxy.org/https://github.com/",
+]
+
+# GitHub API代理列表，按优先级顺序尝试
+GITHUB_API_PROXIES = [
+    "https://api.github.com/",
+    "https://api.github.524228.xyz/",
+    "https://ghfast.top/https://api.github.com/",
+    "https://ghproxy.net/https://api.github.com/",
+    "https://gh-proxy.org/https://api.github.com/",
+]
+
 
 class AutoUpdate:
     """
@@ -113,18 +131,31 @@ class AutoUpdate:
             logger.error("[自动更新] 版本文件保存失败: {}", e)
 
     def _get_latest_release(self) -> dict:
-        """从GitHub API获取最新Release信息"""
-        try:
-            response = requests.get(self.repo_url, timeout=30)
-            if response.status_code == 200:
-                return response.json()
-            logger.debug("[自动更新] GitHub API 返回 HTTP {}", response.status_code)
-        except requests.exceptions.Timeout:
-            logger.debug("[自动更新] GitHub请求超时")
-        except requests.exceptions.ConnectionError:
-            logger.debug("[自动更新] 无法连接GitHub（网络不可达）")
-        except Exception as e:
-            logger.warning("[自动更新] 获取Release信息异常: {}", e)
+        """从GitHub API获取最新Release信息，按代理列表依次尝试"""
+        repo_url = self.repo_url  # 例: https://api.github.com/repos/owner/repo/releases/latest
+
+        for proxy in GITHUB_API_PROXIES:
+            # 将原始URL中的 https://api.github.com/ 替换为代理地址
+            if repo_url.startswith("https://api.github.com/"):
+                url = repo_url.replace("https://api.github.com/", proxy, 1)
+            else:
+                url = repo_url
+
+            try:
+                logger.debug("[自动更新] 尝试API: {}", url)
+                response = requests.get(url, timeout=30)
+                if response.status_code == 200:
+                    logger.debug("[自动更新] API请求成功 (via {})", proxy.rstrip("/"))
+                    return response.json()
+                logger.debug("[自动更新] HTTP {} - 切换下一个API代理", response.status_code)
+            except requests.exceptions.Timeout:
+                logger.debug("[自动更新] API超时 - 切换下一个代理")
+            except requests.exceptions.ConnectionError:
+                logger.debug("[自动更新] API连接失败 - 切换下一个代理")
+            except Exception as e:
+                logger.debug("[自动更新] API请求异常: {} - 切换下一个代理", e)
+
+        logger.warning("[自动更新] 所有API代理均无法获取Release信息")
         return {}
 
     def _download_and_update(self, release_info: dict):
@@ -148,17 +179,11 @@ class AutoUpdate:
         temp_path = exe_path + ".update"
 
         try:
-            # 流式下载，避免大文件占用过多内存
-            logger.info("[自动更新] 下载中: {}", download_url)
-            response = requests.get(download_url, timeout=300, stream=True)
-            if response.status_code != 200:
-                logger.error("[自动更新] 下载失败 HTTP {}", response.status_code)
+            # 通过代理列表尝试下载
+            response = self._download_with_proxy(download_url, temp_path)
+            if not response:
+                logger.error("[自动更新] 所有下载渠道均失败")
                 return
-
-            with open(temp_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
 
             logger.info("[自动更新] 下载完成，执行替换...")
 
@@ -187,6 +212,55 @@ class AutoUpdate:
         except Exception as e:
             logger.error("[自动更新] 更新过程未知异常: {}", e)
             self._cleanup_temp(temp_path)
+
+    def _download_with_proxy(self, original_url: str, save_path: str) -> bool:
+        """
+        按代理优先级顺序尝试下载文件
+
+        GitHub的下载URL格式为: https://github.com/owner/repo/releases/download/tag/file
+        代理替换规则: 将 https://github.com/ 替换为代理前缀
+
+        Args:
+            original_url: 原始GitHub下载地址
+            save_path: 本地保存路径
+
+        Returns:
+            True 下载成功，False 所有代理均失败
+        """
+        for proxy in GITHUB_PROXIES:
+            # 将原始URL中的 https://github.com/ 替换为代理地址
+            if original_url.startswith("https://github.com/"):
+                url = original_url.replace("https://github.com/", proxy, 1)
+            else:
+                url = original_url
+
+            try:
+                logger.info("[自动更新] 尝试下载: {}", url)
+                response = requests.get(url, timeout=60, stream=True)
+                if response.status_code != 200:
+                    logger.debug("[自动更新] HTTP {} - 切换下一个代理", response.status_code)
+                    continue
+
+                # 流式写入文件
+                with open(save_path, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+
+                logger.info("[自动更新] 下载成功 (via {})", proxy.rstrip("/"))
+                return True
+
+            except requests.exceptions.Timeout:
+                logger.debug("[自动更新] 超时 - 切换下一个代理")
+            except requests.exceptions.ConnectionError:
+                logger.debug("[自动更新] 连接失败 - 切换下一个代理")
+            except Exception as e:
+                logger.debug("[自动更新] 下载异常: {} - 切换下一个代理", e)
+
+            # 清理可能写了一半的文件
+            self._cleanup_temp(save_path)
+
+        return False
 
     @staticmethod
     def _find_platform_asset(assets: list, system: str) -> dict | None:
