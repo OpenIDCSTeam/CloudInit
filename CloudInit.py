@@ -1,353 +1,255 @@
-import os
-import time
-import platform
-import requests
-import subprocess
+"""
+CloudInit 服务入口
+OpenIDC 虚拟机初始化与状态上报服务
 
+功能：
+- 定时采集虚拟机硬件状态并上报至宿主机
+- 接收宿主机下发的控制指令（关机/重启/改密/改主机名）
+- 后台自动磁盘扩容
+- 后台自动版本更新（24h周期）
+"""
+
+import sys
+import signal
+import time
+
+import requests
 from loguru import logger
+
 from NICManager.NCManage import NCManage
 from VMUploader.VMStatus import VMStatus
+from CoreManage.CoreConfig import config
+from CoreManage import VMManage, DiskExtend, PowerCtrl, AutoUpdate
+from OSPlatform.PlatformFactory import get_platform
+
+# ==================== 日志配置 ====================
+logger.remove()
+logger.add(
+    sys.stdout,
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level:<7}</level> | <cyan>{message}</cyan>",
+    level=config.log_level,
+    colorize=True,
+)
+logger.add(
+    "logs/cloudinit_{time:YYYY-MM-DD}.log",
+    format="{time:YYYY-MM-DD HH:mm:ss} | {level:<7} | {message}",
+    level="DEBUG",
+    rotation="1 day",
+    retention=config.log_retention,
+    encoding="utf-8",
+)
 
 
-class Cloudinit:
+class CloudInitService:
+    """
+    CloudInit 主服务类
+
+    职责：
+    1. 初始化平台适配层、状态采集器、管理模块
+    2. 启动后台任务（自动更新、磁盘扩容）
+    3. 主循环定时上报状态、接收并执行控制指令
+    """
+
     def __init__(self):
+        self._running = False
+
+        # 初始化平台适配层
+        try:
+            self._platform = get_platform()
+        except RuntimeError as e:
+            logger.critical("平台初始化失败: {}", e)
+            sys.exit(1)
+
+        # 初始化各功能模块
         self.vm_status = VMStatus()
-        self.vm_config = {
-            "hs_name": "",
-            "vm_uuid": "",
-            "vm_pass": "",
-        }
-        self.network_u = 0
-        self.network_d = 0
-        self.flu_usage = 0
+        self.vm_manage = VMManage(self._platform)
+        self.power_ctrl = PowerCtrl(self._platform)
+        self.disk_extend = DiskExtend(self._platform)
+        self.auto_update = AutoUpdate()
 
-    def server(self):
+        # 网络增量计算缓存
+        self._last_network_u = 0
+        self._last_network_d = 0
+        self._last_flu_usage = 0
+
+    def start(self):
+        """启动服务主流程"""
+        self._running = True
+        self._register_signals()
+
+        logger.info("=" * 50)
+        logger.info("CloudInit 服务启动")
+        logger.info("平台: {} | 上报间隔: {}s | 端口: {}",
+                    self._platform.__class__.__name__,
+                    config.report_interval,
+                    config.report_port)
+        if config.report_host:
+            logger.info("上报地址: {}（固定配置）", config.report_host)
+        else:
+            logger.info("上报地址: 自动推算（网关偏移: +{}）", config.gateway_offset)
+        logger.info("=" * 50)
+
+        # 启动后台任务（非阻塞，失败不影响主流程）
+        try:
+            if config.update_enabled:
+                self.auto_update.start()
+            else:
+                logger.info("[自动更新] 已通过配置禁用")
+        except Exception as e:
+            logger.error("自动更新启动失败（不影响主服务）: {}", e)
+
+        try:
+            self.disk_extend.extend()
+        except Exception as e:
+            logger.error("磁盘扩容启动失败（不影响主服务）: {}", e)
+
+        # 进入主循环
+        self._main_loop()
+
+    def stop(self):
+        """优雅停止服务"""
+        self._running = False
+        try:
+            self.auto_update.stop()
+        except Exception:
+            pass
+        logger.info("CloudInit 服务已停止")
+
+    def _register_signals(self):
+        """注册系统信号，支持优雅退出"""
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+
+    def _signal_handler(self, signum, _frame):
+        """信号处理回调"""
+        logger.info("收到退出信号({}), 正在停止服务...", signum)
+        self.stop()
+
+    def _main_loop(self):
+        """
+        主循环 - 定时采集并上报虚拟机状态
+
+        流程：
+        1. 等待上报间隔
+        2. 采集硬件状态
+        3. 计算网络增量
+        4. 遍历网卡，向宿主机上报
+        5. 处理宿主机返回的控制指令
+        """
         time_last = 0
-        nets_apis = NCManage()
-        nets_apis.get_nic()
-        nets_list = nets_apis.nic_list
-        while True:  # 每60秒上报一次 ===========================================
-            time.sleep(1)
-            time_data = time.time()
-            if time_data - time_last > 60:
-                self.vm_status.status()
-                # 获取增量带宽 ==================================================
-                last_network_u = self.network_u
-                last_network_d = self.network_d
-                last_flu_usage = self.flu_usage
-                print("[原始带宽上行]", last_network_u)
-                print("[原始带宽下行]", last_network_d)
-                print("[原始流量消耗]", last_flu_usage)
-                self.network_u = self.vm_status.vm_status.network_d
-                self.network_d = self.vm_status.vm_status.network_u
-                self.flu_usage = self.vm_status.vm_status.flu_usage
-                self.vm_status.vm_status.network_d = self.network_d - last_network_d
-                self.vm_status.vm_status.network_u = self.network_u - last_network_u
-                self.vm_status.vm_status.flu_usage = self.flu_usage - last_flu_usage
-                print("[增量带宽上行]", self.vm_status.vm_status.network_d)
-                print("[增量带宽下行]", self.vm_status.vm_status.network_u)
-                print("[增量流量消耗]", self.vm_status.vm_status.flu_usage)
-                vm_status = self.vm_status.__dict__()
-                for nic_name in nets_list:
-                    nic_gate = nets_list[nic_name].ip4_gate
-                    if nic_gate == "" or not nic_gate.endswith(".1"):
-                        continue
-                    if nets_list[nic_name].mac_addr == "00:00:00:00:00:00":
-                        continue
-                    nic_gate = ".".join(nic_gate.split(".")[:-1]) + ".2"
-                    url_post = f"http://{nic_gate}:1880/api/client/upload"
-                    url_post += f"?nic={nets_list[nic_name].mac_addr}"
 
-                    try:  # 上报虚拟机状态 ====================================
-                        logger.info("[上报虚拟机状态地址] {}", url_post)
-                        logger.debug("[上报虚拟机状态数据] {}", vm_status)
-                        vm_result = requests.post(url=url_post, json=vm_status, timeout=5)
-                        logger.info("[上报虚拟机状态结果] {}", vm_result.status_code)
-                        if vm_result.status_code == 200:
-                            logger.info("[上报虚拟机状态成功]")
-                            vm_data = vm_result.json()['data']
-                            if not vm_data:
-                                continue
-                            self.vm_config["vm_uuid"] = vm_data["vm_uuid"]
-                            self.vm_config["vm_pass"] = vm_data["vm_pass"]
-                            
-                            # 检查 vm_flag 状态
-                            vm_flag = vm_data.get("vm_flag", "")
-                            if vm_flag == "ON_STOP" or vm_flag == "S_CLOSE":
-                                logger.warning("[虚拟机控制] 收到关机指令，准备关机")
-                                self.shutdown_system()
-                                return
-                            elif vm_flag == "S_RESET":
-                                logger.warning("[虚拟机控制] 收到重启指令，准备重启")
-                                self.reboot_system()
-                                return
-                            
-                            self.manage()
-                    except requests.exceptions.ConnectionError as e:
-                        logger.error("[上报虚拟机状态异常]", e)
-                        continue
-                    except requests.exceptions.Timeout as e:
-                        logger.error("[上报虚拟机状态异常]", e)
-                        continue
-                    except Exception as e:
-                        logger.error("[上报虚拟机状态异常] {}", e)
-                time_last = time_data
-
-    def manage(self):
-        """管理虚拟机配置，设置主机名和管理员密码"""
-        if not self.vm_config.get("vm_uuid") or not self.vm_config.get("vm_pass"):
-            logger.warning("[管理虚拟机配置] 虚拟机UUID或密码为空，跳过配置")
+        # 初始化网卡管理器
+        try:
+            nic_manager = NCManage()
+        except Exception as e:
+            logger.critical("网卡管理器初始化失败: {}", e)
             return
 
-        vm_uuid = self.vm_config["vm_uuid"]
-        vm_pass = self.vm_config["vm_pass"]
+        while self._running:
+            time.sleep(1)
+            now = time.time()
 
-        # 检测操作系统类型
-        system = platform.system().lower()
-        logger.info("[管理虚拟机配置] 检测到操作系统: {}", system)
+            if now - time_last < config.report_interval:
+                continue
 
-        try:
-            if system == "linux":
-                logger.info("[Linux配置] 开始设置Linux系统配置")
+            # 采集硬件状态（失败不中断循环）
+            try:
+                self.vm_status.status()
+                self._calc_network_delta()
+            except Exception as e:
+                logger.error("状态采集异常: {}", e)
+                time_last = now
+                continue
 
-                # 设置主机名
-                logger.info("[Linux主机名] 设置主机名为: {}", vm_uuid)
+            status_data = self.vm_status.to_dict()
 
-                # 获取当前主机名
-                current_hostname_result = subprocess.run(["hostname"], capture_output=True, text=True)
-                current_hostname = current_hostname_result.stdout.strip()
-
-                if current_hostname == vm_uuid:
-                    logger.info("[Linux主机名] 当前主机名已经是: {}，无需修改", vm_uuid)
-                else:
-                    logger.info("[Linux主机名] 当前主机名: {}，需要修改为: {}", current_hostname, vm_uuid)
-                    result = subprocess.run(["sudo", "hostnamectl", "set-hostname", vm_uuid], capture_output=True,
-                                            text=True)
-                    if result.returncode == 0:
-                        logger.info("[Linux主机名] 主机名设置成功: {}", vm_uuid)
-                    else:
-                        # 备用方式
-                        with open("/etc/hostname", "w") as f:
-                            f.write(vm_uuid + "\n")
-                        subprocess.run(["sudo", "hostname", vm_uuid], check=True)
-                        logger.info("[Linux主机名] 传统方式设置成功: {}", vm_uuid)
-
-                # 设置root密码
-                logger.info("[Linux密码] 设置root密码")
-                process = subprocess.Popen(["sudo", "chpasswd"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                           stderr=subprocess.PIPE, text=True)
-                stdout, stderr = process.communicate(input=f"root:{vm_pass}")
-                if process.returncode == 0:
-                    logger.info("[Linux密码] root密码设置成功")
-                else:
-                    logger.error("[Linux密码] 设置失败: {}", stderr)
-
-                # 设置user密码（与root相同）
-                logger.info("[Linux密码] 设置user密码")
-                process = subprocess.Popen(["sudo", "chpasswd"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                           stderr=subprocess.PIPE, text=True)
-                stdout, stderr = process.communicate(input=f"user:{vm_pass}")
-                if process.returncode == 0:
-                    logger.info("[Linux密码] user密码设置成功")
-                else:
-                    logger.error("[Linux密码] user设置失败: {}", stderr)
-
-                # 更新 hosts 文件
-                logger.info("[Linux hosts] 更新 hosts 文件")
-                self._update_hosts_linux(vm_uuid)
-
-                logger.info("[Linux配置] Linux系统配置完成")
-
-            elif system == "windows":
-                logger.info("[Windows配置] 开始设置Windows系统配置")
-
-                # 设置主机名
-                logger.info("[Windows主机名] 设置主机名为: {}", vm_uuid)
-
-                # 获取当前主机名
-                current_hostname_result = subprocess.run(["hostname"], capture_output=True, text=True, shell=True)
-                current_hostname = current_hostname_result.stdout.strip()
-
-                if current_hostname.lower() == vm_uuid.lower():
-                    logger.info("[Windows主机名] 当前主机名已经是: {}，无需修改", vm_uuid)
-                else:
-                    logger.info("[Windows主机名] 当前主机名: {}，需要修改为: {}", current_hostname, vm_uuid)
-                    
-                    # 方案1: 使用 netdom (兼容 Windows 7)
-                    logger.info("[Windows主机名] 尝试使用 netdom 设置主机名")
-                    netdom_cmd = f'netdom renamecomputer %computername% /newname:{vm_uuid} /force'
-                    result = subprocess.run(
-                        netdom_cmd,
-                        capture_output=True, text=True, shell=True)
-                    
-                    if result.returncode == 0:
-                        logger.info("[Windows主机名] netdom 设置成功，需要重启后生效: {}", vm_uuid)
-                    else:
-                        # 方案2: 备用 PowerShell Rename-Computer (Windows 8+)
-                        logger.warning("[Windows主机名] netdom 设置失败: {}，尝试使用 Rename-Computer", result.stderr)
-                        powershell_cmd = f'Rename-Computer -NewName "{vm_uuid}" -Force'
-                        result = subprocess.run(
-                            ["powershell", "-Command", powershell_cmd],
-                            capture_output=True, text=True, shell=True)
-                        if result.returncode == 0:
-                            logger.info("[Windows主机名] Rename-Computer 设置成功，需要重启后生效: {}", vm_uuid)
-                        else:
-                            logger.error("[Windows主机名] 两种方式均设置失败: {}", result.stderr)
-
-                # 设置administrator密码
-                logger.info("[Windows密码] 设置administrator密码")
-                result = subprocess.run(["net", "user", "administrator", vm_pass], capture_output=True, text=True)
-                print(" ".join(["net", "user", "administrator", vm_pass]))
-                print(result.stdout)
-                if result.returncode == 0:
-                    logger.info("[Windows密码] administrator密码设置成功")
-                else:
-                    logger.error("[Windows密码] 设置失败: {}", result.stderr)
-
-                # 更新 hosts 文件
-                logger.info("[Windows hosts] 更新 hosts 文件")
-                self._update_hosts_windows(vm_uuid)
-
-                logger.info("[Windows配置] Windows系统配置完成")
+            # 确定上报目标并发送
+            if config.report_host:
+                # 使用固定配置的上报地址
+                url = f"http://{config.report_host}:{config.report_port}{config.report_path}"
+                self._report_status(url, status_data, nic_mac="")
             else:
-                logger.warning("[管理虚拟机配置] 不支持的操作系统: {}", system)
+                # 自动从网卡网关推算上报地址
+                for nic_name, nic_config in nic_manager.nic_list.items():
+                    gateway = nic_config.ip4_gate
+                    if not gateway or not gateway.endswith(".1"):
+                        continue
+                    if nic_config.mac_addr == "00:00:00:00:00:00":
+                        continue
 
-        except Exception as e:
-            logger.error("[管理虚拟机配置] 配置失败: {}", e)
+                    # 根据网关偏移量计算目标IP
+                    parts = gateway.split(".")
+                    parts[-1] = str(config.gateway_offset)
+                    target_ip = ".".join(parts)
 
-    def _update_hosts_linux(self, hostname):
-        """更新 Linux hosts 文件"""
+                    url = f"http://{target_ip}:{config.report_port}{config.report_path}"
+                    url += f"?nic={nic_config.mac_addr}"
+                    self._report_status(url, status_data, nic_mac=nic_config.mac_addr)
+
+            time_last = now
+
+    def _calc_network_delta(self):
+        """计算网络增量数据（本周期相对上周期的变化量）"""
+        current_u = self.vm_status.vm_status.network_u
+        current_d = self.vm_status.vm_status.network_d
+        current_flu = self.vm_status.vm_status.flu_usage
+
+        self.vm_status.vm_status.network_u = current_u - self._last_network_u
+        self.vm_status.vm_status.network_d = current_d - self._last_network_d
+        self.vm_status.vm_status.flu_usage = current_flu - self._last_flu_usage
+
+        self._last_network_u = current_u
+        self._last_network_d = current_d
+        self._last_flu_usage = current_flu
+
+    def _report_status(self, url: str, data: dict, nic_mac: str = ""):
+        """
+        上报状态到宿主机，并处理返回的控制指令
+
+        Args:
+            url: 上报目标URL
+            data: 状态数据字典
+            nic_mac: 当前网卡MAC（用于日志标识）
+        """
         try:
-            hosts_path = "/etc/hosts"
-            hosts_entry = f"127.0.0.1\t{hostname}\n"
+            resp = requests.post(url=url, json=data, timeout=5)
+            if resp.status_code != 200:
+                logger.warning("上报失败 [{}] HTTP {}", url, resp.status_code)
+                return
 
-            # 读取当前 hosts 文件内容
-            with open(hosts_path, "r") as f:
-                lines = f.readlines()
+            vm_data = resp.json().get("data")
+            if not vm_data:
+                return
 
-            # 查找是否已存在该主机的映射
-            found = False
-            new_lines = []
-            for line in lines:
-                stripped = line.strip()
-                if stripped and not stripped.startswith("#"):
-                    parts = stripped.split()
-                    if len(parts) >= 2 and parts[1] == hostname:
-                        # 更新现有条目
-                        new_lines.append(hosts_entry)
-                        found = True
-                    else:
-                        new_lines.append(line)
-                else:
-                    new_lines.append(line)
+            # 更新虚拟机配置信息
+            self.vm_manage.vm_config["vm_uuid"] = vm_data.get("vm_uuid", "")
+            self.vm_manage.vm_config["vm_pass"] = vm_data.get("vm_pass", "")
 
-            # 如果没有找到，添加新条目（在 localhost 条目之后）
-            if not found:
-                for i, line in enumerate(new_lines):
-                    stripped = line.strip()
-                    if stripped and "127.0.0.1" in stripped and "localhost" in stripped:
-                        new_lines.insert(i + 1, hosts_entry)
-                        break
-                else:
-                    # 如果找不到 localhost 条目，直接添加到文件末尾
-                    new_lines.append(hosts_entry)
+            # 处理控制指令
+            vm_flag = vm_data.get("vm_flag", "")
+            if vm_flag in ("ON_STOP", "S_CLOSE"):
+                logger.warning("收到关机指令, 执行关机...")
+                self.power_ctrl.shutdown_system()
+                self._running = False
+                return
+            elif vm_flag == "S_RESET":
+                logger.warning("收到重启指令, 执行重启...")
+                self.power_ctrl.reboot_system()
+                self._running = False
+                return
 
-            # 写回文件
-            with open(hosts_path, "w") as f:
-                f.writelines(new_lines)
+            # 非阻塞执行虚拟机配置（改主机名、改密码）
+            self.vm_manage.manage()
 
-            logger.info("[Linux hosts] hosts 文件更新成功")
-
-        except IOError as e:
-            logger.error("[Linux hosts] 读取或写入 hosts 文件失败: {}", e)
+        except requests.exceptions.ConnectionError:
+            logger.debug("上报连接失败: {}", url)
+        except requests.exceptions.Timeout:
+            logger.debug("上报超时: {}", url)
         except Exception as e:
-            logger.error("[Linux hosts] 更新 hosts 文件异常: {}", e)
-
-    def _update_hosts_windows(self, hostname):
-        """更新 Windows hosts 文件"""
-        try:
-            hosts_path = r"C:\Windows\System32\drivers\etc\hosts"
-            hosts_entry = f"127.0.0.1\t{hostname}\n"
-
-            # 读取当前 hosts 文件内容
-            with open(hosts_path, "r") as f:
-                lines = f.readlines()
-
-            # 查找是否已存在该主机的映射
-            found = False
-            new_lines = []
-            for line in lines:
-                stripped = line.strip()
-                if stripped and not stripped.startswith("#"):
-                    parts = stripped.split()
-                    if len(parts) >= 2 and parts[1].lower() == hostname.lower():
-                        # 更新现有条目
-                        new_lines.append(hosts_entry)
-                        found = True
-                    else:
-                        new_lines.append(line)
-                else:
-                    new_lines.append(line)
-
-            # 如果没有找到，添加新条目（在 localhost 条目之后）
-            if not found:
-                for i, line in enumerate(new_lines):
-                    stripped = line.strip()
-                    if stripped and "127.0.0.1" in stripped and "localhost" in stripped.lower():
-                        new_lines.insert(i + 1, hosts_entry)
-                        break
-                else:
-                    # 如果找不到 localhost 条目，直接添加到文件末尾
-                    new_lines.append(hosts_entry)
-
-            # 写回文件
-            with open(hosts_path, "w") as f:
-                f.writelines(new_lines)
-
-            logger.info("[Windows hosts] hosts 文件更新成功")
-
-        except IOError as e:
-            logger.error("[Windows hosts] 读取或写入 hosts 文件失败: {}", e)
-        except Exception as e:
-            logger.error("[Windows hosts] 更新 hosts 文件异常: {}", e)
-
-    def shutdown_system(self):
-        """执行系统关机命令"""
-        system = platform.system().lower()
-        try:
-            if system == "linux":
-                logger.info("[系统关机] 执行 Linux 关机命令")
-                subprocess.run(["sudo", "shutdown", "-h", "now"], check=True)
-            elif system == "windows":
-                logger.info("[系统关机] 执行 Windows 关机命令")
-                subprocess.run(["shutdown", "/s", "/t", "0", "/f"], check=True)
-            else:
-                logger.warning("[系统关机] 不支持的操作系统: {}", system)
-        except Exception as e:
-            logger.error("[系统关机] 关机命令执行失败: {}", e)
-
-    def reboot_system(self):
-        """执行系统重启命令"""
-        system = platform.system().lower()
-        try:
-            if system == "linux":
-                logger.info("[系统重启] 执行 Linux 重启命令")
-                subprocess.run(["sudo", "reboot"], check=True)
-            elif system == "windows":
-                logger.info("[系统重启] 执行 Windows 重启命令")
-                subprocess.run(["shutdown", "/r", "/t", "0", "/f"], check=True)
-            else:
-                logger.warning("[系统重启] 不支持的操作系统: {}", system)
-        except Exception as e:
-            logger.error("[系统重启] 重启命令执行失败: {}", e)
-
-    def extend(self):
-        system = platform.system().lower()
-        if system == "windows":
-            os.system("mshta vbscript:Execute(\"CreateObject(\"\"WScript.Shell\"\").Run \"\"cmd /c (echo select volume C&&echo extend)|diskpart\"\",0,True:close\")")
+            logger.error("上报异常: {}", e)
 
 
+# ==================== 入口 ====================
 if __name__ == "__main__":
-    ci = Cloudinit()
-    ci.extend()
-    ci.server()
+    service = CloudInitService()
+    service.start()

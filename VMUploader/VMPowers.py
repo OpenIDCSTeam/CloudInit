@@ -22,6 +22,23 @@ class VMPowers(enum.Enum):
     # 其他状态 ==========
     CRASHED = 0xe  # 崩溃
     UNKNOWN = 0xf  # 未知
+    # 执行状态 ==========
+    CREATE = 0x10  # 创建
+    DELETE = 0x11  # 销毁
+    CONFIG = 0x12  # 配置
+    BACKUP = 0x13  # 备份
+    STORED = 0x14  # 还原
+    PASSWD = 0x15  # 改密
+    SYSTEM = 0x16  # 重装
+    SN_NEW = 0x17  # 还原
+    SN_BAK = 0x18  # 还原
+    ON_HDD = 0x19  # 硬盘
+    ON_PCI = 0x1a  # 设备
+    ON_USB = 0x1b  # 设备
+    ON_NET = 0x1c  # 网卡
+    ON_NAT = 0x1d  # 端口
+    ON_WEB = 0x1e  # 反代
+    ON_UFW = 0x1f  # 安全
 
     def __str__(self):
         return self.name

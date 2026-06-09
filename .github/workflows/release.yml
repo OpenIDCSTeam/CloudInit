@@ -63,7 +63,7 @@ jobs:
         pip install pyinstaller
         pip install netifaces requests GPUtil psutil py-cpuinfo urllib3 loguru
 
-    - name: Build with PyInstaller
+    - name: Build with PyInst
       run: |
         pyinstaller --onefile --name CloudInit${{ matrix.ext }} --hidden-import loguru CloudInit.py
 

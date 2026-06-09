@@ -3,56 +3,58 @@ from .VMPowers import VMPowers as VPower
 
 
 class HWStatus:
-    def __init__(self, config=None, /, **kwargs):
-        # 基础数据 ============================
-        self.ac_status: VPower = VPower.UNKNOWN
-        self.cpu_model: str = ""  # 当前CPU名称
-        self.cpu_total: int = 0  # 当前核心总计
-        self.cpu_usage: int = 0  # 当前核心已用
-        self.mem_total: int = 0  # 当前内存总计
-        self.mem_usage: int = 0  # 当前内存已用
-        self.hdd_total: int = 0  # 当前磁盘总计
-        self.hdd_usage: int = 0  # 当前磁盘已用
-        self.ext_usage: dict = {}  # 数据盘已用
-        # 网络信息 ============================
-        self.flu_total: int = 0  # 当前流量总计
-        self.flu_usage: int = 0  # 当前流量已用
-        self.nat_total: int = 0  # 当前端口总计
-        self.nat_usage: int = 0  # 当前端口已用
-        self.web_total: int = 0  # 当前代理总计
-        self.web_usage: int = 0  # 当前代理已用
-        # 其他信息 ============================
-        self.gpu_usage: dict = {}  # GPU 使用率
-        self.gpu_total: int = 0  # 当前显卡数量
-        self.network_u: int = 0  # 当前上行带宽
-        self.network_d: int = 0  # 当前下行带宽
-        self.cpu_heats: int = 0  # 当前核心温度
-        self.cpu_power: int = 0  # 当前核心功耗
-        # 虚拟机信息 ============================
-        self.vm_name: str = ""  # 虚拟机名称
-        self.vm_pass: str = ""  # 虚拟机密码
-        # 加载传入的参数 ======================
-        if config is not None:
-            self.__read__(config)
-        self.__load__(**kwargs)
+    """硬件状态数据模型"""
 
-    # 加载数据 ================================
-    def __load__(self, **kwargs):
+    def __init__(self, config=None, /, **kwargs):
+        # 基础数据
+        self.ac_status: VPower = VPower.UNKNOWN
+        self.cpu_model: str = ""
+        self.cpu_total: int = 0
+        self.cpu_usage: int = 0
+        self.mem_total: int = 0
+        self.mem_usage: int = 0
+        self.hdd_total: int = 0
+        self.hdd_usage: int = 0
+        self.ext_usage: dict = {}
+        # 网络信息
+        self.flu_total: int = 0
+        self.flu_usage: int = 0
+        self.nat_total: int = 0
+        self.nat_usage: int = 0
+        self.web_total: int = 0
+        self.web_usage: int = 0
+        # 其他信息
+        self.gpu_usage: dict = {}
+        self.gpu_total: int = 0
+        self.network_u: int = 0
+        self.network_d: int = 0
+        self.network_a: int = 0
+        self.cpu_heats: int = 0
+        self.cpu_power: int = 0
+        # 虚拟机信息
+        self.vm_name: str = ""
+        self.vm_pass: str = ""
+        # 加载传入的参数
+        if config is not None:
+            self._read(config)
+        self._load(**kwargs)
+
+    def _load(self, **kwargs):
+        """从关键字参数加载数据"""
         for key, value in kwargs.items():
             if hasattr(self, key):
                 setattr(self, key, value)
 
-    # 读取数据 ================================
-    def __read__(self, data: dict):
+    def _read(self, data: dict):
+        """从字典读取数据"""
         for key, value in data.items():
-            if key in self.__dict__:
+            if hasattr(self, key):
                 setattr(self, key, value)
 
-    # 转换为字典 ==============================
-    def __dict__(self):
+    def to_dict(self) -> dict:
+        """转换为字典（用于JSON序列化）"""
         return {
-            "ac_status": VPower.__str__(
-                self.ac_status),
+            "ac_status": str(self.ac_status),
             "cpu_model": self.cpu_model,
             "cpu_total": self.cpu_total,
             "cpu_usage": self.cpu_usage,
@@ -71,12 +73,12 @@ class HWStatus:
             "gpu_total": self.gpu_total,
             "network_u": self.network_u,
             "network_d": self.network_d,
+            "network_a": self.network_a,
             "cpu_heats": self.cpu_heats,
             "cpu_power": self.cpu_power,
             "vm_name": self.vm_name,
             "vm_pass": self.vm_pass,
         }
 
-    # 转换为文本 ==============================
     def __str__(self):
-        return json.dumps(self.__dict__())
+        return json.dumps(self.to_dict())
