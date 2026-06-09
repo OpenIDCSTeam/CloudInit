@@ -35,11 +35,11 @@ jobs:
             artifact-name: cloudinit-win10
             ext: '.exe'
 
-          - os: windows-2019
-            name: win7
-            python-version: '3.8'
-            artifact-name: cloudinit-win7
-            ext: '.exe'
+          # - os: windows-2019
+          #   name: win7
+          #   python-version: '3.8'
+          #   artifact-name: cloudinit-win7
+          #   ext: '.exe'
 
     runs-on: ${{ matrix.os }}
 
@@ -126,7 +126,7 @@ jobs:
           artifacts/cloudinit-linux/CloudInit
           artifacts/cloudinit-macos/CloudInit
           artifacts/cloudinit-win10/CloudInit.exe
-          artifacts/cloudinit-win7/CloudInit.exe
+          # artifacts/cloudinit-win7/CloudInit.exe
         tag_name: beta
         name: Beta Build (Latest)
         body: |
@@ -174,7 +174,7 @@ jobs:
           artifacts/cloudinit-linux/CloudInit
           artifacts/cloudinit-macos/CloudInit
           artifacts/cloudinit-win10/CloudInit.exe
-          artifacts/cloudinit-win7/CloudInit.exe
+          # artifacts/cloudinit-win7/CloudInit.exe
         tag_name: ${{ github.event.inputs.version }}
         name: Release ${{ github.event.inputs.version }}
         draft: false

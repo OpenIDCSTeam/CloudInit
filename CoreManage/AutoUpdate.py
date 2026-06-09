@@ -105,12 +105,71 @@ class AutoUpdate:
             return
 
         latest_version = latest_info.get("tag_name", "")
-        if not latest_version or latest_version == current_version:
+        if not latest_version:
+            return
+
+        # 忽略 beta/prerelease 版本
+        if latest_info.get("prerelease", False):
+            logger.debug("[自动更新] 最新版本({})为预发布版本，跳过", latest_version)
+            return
+
+        # 版本相同则跳过
+        if latest_version == current_version:
             logger.debug("[自动更新] 当前版本({})已是最新", current_version)
+            return
+
+        # 语义化版本比较，确保远程版本确实更新
+        if not self._is_newer_version(latest_version, current_version):
+            logger.debug("[自动更新] 远程版本({})不高于当前版本({})，跳过",
+                         latest_version, current_version)
             return
 
         logger.info("[自动更新] 发现新版本: {} -> {}", current_version, latest_version)
         self._download_and_update(latest_info)
+
+    @staticmethod
+    def _is_newer_version(remote: str, local: str) -> bool:
+        """
+        语义化版本比较，判断远程版本是否高于本地版本。
+
+        支持格式: v1.2.3, 1.2.3, v1.0, 1.0 等
+        如果本地版本为 "unknown" 则认为远程版本更新。
+        无法解析时回退为字符串不等判断。
+        """
+        if local == "unknown":
+            return True
+
+        def parse_version(ver: str) -> list:
+            """将版本字符串解析为数字列表，如 'v1.2.3' -> [1, 2, 3]"""
+            ver = ver.strip().lstrip("vV")
+            parts = []
+            for p in ver.split("."):
+                try:
+                    parts.append(int(p))
+                except ValueError:
+                    # 处理类似 "3-rc1" 的情况，取数字部分
+                    digits = ""
+                    for ch in p:
+                        if ch.isdigit():
+                            digits += ch
+                        else:
+                            break
+                    parts.append(int(digits) if digits else 0)
+            return parts
+
+        try:
+            remote_parts = parse_version(remote)
+            local_parts = parse_version(local)
+
+            # 补齐长度，短的补0
+            max_len = max(len(remote_parts), len(local_parts))
+            remote_parts.extend([0] * (max_len - len(remote_parts)))
+            local_parts.extend([0] * (max_len - len(local_parts)))
+
+            return remote_parts > local_parts
+        except Exception:
+            # 解析失败，回退为简单不等判断
+            return remote != local
 
     def _get_current_version(self) -> str:
         """读取本地版本号文件"""
@@ -131,8 +190,13 @@ class AutoUpdate:
             logger.error("[自动更新] 版本文件保存失败: {}", e)
 
     def _get_latest_release(self) -> dict:
-        """从GitHub API获取最新Release信息，按代理列表依次尝试"""
-        repo_url = self.repo_url  # 例: https://api.github.com/repos/owner/repo/releases/latest
+        """
+        从GitHub API获取最新正式Release信息，按代理列表依次尝试。
+        使用 /releases 接口获取列表，过滤掉 prerelease 和 beta tag，
+        返回第一个正式版本。
+        """
+        # 将 /releases/latest 替换为 /releases 以获取完整列表用于过滤
+        repo_url = self.repo_url.replace("/releases/latest", "/releases")
 
         for proxy in GITHUB_API_PROXIES:
             # 将原始URL中的 https://api.github.com/ 替换为代理地址
@@ -146,7 +210,21 @@ class AutoUpdate:
                 response = requests.get(url, timeout=30)
                 if response.status_code == 200:
                     logger.debug("[自动更新] API请求成功 (via {})", proxy.rstrip("/"))
-                    return response.json()
+                    releases = response.json()
+                    # 如果返回的是列表，过滤出第一个非prerelease且非beta的版本
+                    if isinstance(releases, list):
+                        for release in releases:
+                            tag = release.get("tag_name", "").lower()
+                            if release.get("prerelease", False):
+                                continue
+                            if release.get("draft", False):
+                                continue
+                            if "beta" in tag or "alpha" in tag or "rc" in tag:
+                                continue
+                            return release
+                        return {}  # 没有找到正式版本
+                    # 兼容直接返回单个release的情况
+                    return releases
                 logger.debug("[自动更新] HTTP {} - 切换下一个API代理", response.status_code)
             except requests.exceptions.Timeout:
                 logger.debug("[自动更新] API超时 - 切换下一个代理")
