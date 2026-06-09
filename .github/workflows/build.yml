@@ -122,14 +122,19 @@ jobs:
         git tag -fa beta -m "Beta build from ${{ github.sha }}"
         git push origin beta --force
 
+    - name: Rename artifacts for release
+      run: |
+        mv artifacts/cloudinit-linux/CloudInit artifacts/cloudinit-linux/CloudInit-linux
+        mv artifacts/cloudinit-macos/CloudInit artifacts/cloudinit-macos/CloudInit-macos
+
     - name: Create/Update Beta Release
       uses: softprops/action-gh-release@v1
       with:
+        fail_on_unmatched_files: false
         files: |
-          artifacts/cloudinit-linux/CloudInit
-          artifacts/cloudinit-macos/CloudInit
+          artifacts/cloudinit-linux/CloudInit-linux
+          artifacts/cloudinit-macos/CloudInit-macos
           artifacts/cloudinit-win10/CloudInit.exe
-          # artifacts/cloudinit-win7/CloudInit.exe
         tag_name: beta
         name: Beta Build (Latest)
         body: |
@@ -170,14 +175,19 @@ jobs:
         git tag -a ${{ github.event.inputs.version }} -m "Release ${{ github.event.inputs.version }}"
         git push origin ${{ github.event.inputs.version }}
 
+    - name: Rename artifacts for release
+      run: |
+        mv artifacts/cloudinit-linux/CloudInit artifacts/cloudinit-linux/CloudInit-linux
+        mv artifacts/cloudinit-macos/CloudInit artifacts/cloudinit-macos/CloudInit-macos
+
     - name: Create Stable Release
       uses: softprops/action-gh-release@v1
       with:
+        fail_on_unmatched_files: false
         files: |
-          artifacts/cloudinit-linux/CloudInit
-          artifacts/cloudinit-macos/CloudInit
+          artifacts/cloudinit-linux/CloudInit-linux
+          artifacts/cloudinit-macos/CloudInit-macos
           artifacts/cloudinit-win10/CloudInit.exe
-          # artifacts/cloudinit-win7/CloudInit.exe
         tag_name: ${{ github.event.inputs.version }}
         name: Release ${{ github.event.inputs.version }}
         draft: false
