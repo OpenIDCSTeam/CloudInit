@@ -62,10 +62,18 @@ class AutoUpdate:
 
     @property
     def version_file(self) -> str:
-        """版本文件路径"""
-        return os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".version"
-        )
+        """
+        版本文件路径。
+        PyInstaller打包后基于可执行文件所在目录，
+        开发环境下基于项目根目录。
+        """
+        if getattr(sys, 'frozen', False):
+            # PyInstaller 打包环境：使用可执行文件所在目录
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            # 开发环境：使用项目根目录
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(base_dir, ".version")
 
     def start(self):
         """启动自动更新检查线程"""
