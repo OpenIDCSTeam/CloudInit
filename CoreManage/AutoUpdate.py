@@ -396,10 +396,14 @@ class AutoUpdate:
         try:
             if system in ("linux", "darwin"):
                 logger.info("[自动更新] 通过systemctl重启服务...")
-                subprocess.run(
+                # 使用Popen异步发起重启，然后立即退出当前进程
+                # systemd会负责kill当前进程并启动新版本
+                subprocess.Popen(
                     ["systemctl", "restart", "ServerInit"],
-                    capture_output=True, text=True
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 )
+                sys.exit(0)
             elif system == "windows":
                 logger.info("[自动更新] 通过批处理重启...")
                 exe_path = AutoUpdate._get_executable_path()

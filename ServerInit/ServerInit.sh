@@ -1,9 +1,17 @@
 #!/bin/bash
 # OpenIDC ServerInit 安装脚本
 
+# 停止已有服务（首次安装时忽略错误）
+systemctl stop ServerInit 2>/dev/null
+# 等待进程完全退出，避免 Text file busy
+while pgrep -x ServerInit >/dev/null 2>&1; do
+    sleep 1
+done
+
 chmod +x ./ServerInit
 chmod +x ./ServerInit.service
 mkdir                -p /opt/ServerInit/
+rm -f /opt/ServerInit/ServerInit
 cp ./ServerInit         /opt/ServerInit/
 cp ./ServerInit.service /etc/systemd/system/
 systemctl daemon-reload
