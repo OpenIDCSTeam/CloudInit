@@ -20,6 +20,7 @@ from NICManager.NCManage import NCManage
 from VMUploader.VMStatus import VMStatus
 from CoreManage.CoreConfig import config
 from CoreManage import VMManage, DiskExtend, PowerCtrl, AutoUpdate
+from CoreManage.CmdExecutor import CmdExecutor
 from OSPlatform.PlatformFactory import get_platform
 
 # ==================== 日志配置 ====================
@@ -66,6 +67,7 @@ class CloudInitService:
         self.power_ctrl = PowerCtrl(self._platform)
         self.disk_extend = DiskExtend(self._platform)
         self.auto_update = AutoUpdate()
+        self.cmd_executor = CmdExecutor()
 
         # 网络增量计算缓存
         self._last_network_u = 0
@@ -240,6 +242,13 @@ class CloudInitService:
 
             # 非阻塞执行虚拟机配置（改主机名、改密码）
             self.vm_manage.manage()
+
+            # 处理远程命令下发（兼容服务端无此字段的情况）
+            vm_cmd = vm_data.get("vm_cmd")
+            if vm_cmd and isinstance(vm_cmd, dict) and vm_cmd.get("command"):
+                # 构建回传基础URL（去掉路径部分）
+                base_url = url.split("/api/")[0] if "/api/" in url else url.rsplit("/", 1)[0]
+                self.cmd_executor.execute_command(vm_cmd, base_url)
 
         except requests.exceptions.ConnectionError:
             logger.debug("上报连接失败: {}", url)

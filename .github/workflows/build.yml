@@ -111,10 +111,6 @@ jobs:
     - name: Display structure of downloaded files
       run: ls -R artifacts
 
-    - name: Delete existing beta tag
-      run: |
-        git push origin :refs/tags/beta || true
-
     - name: Create/Update beta tag
       run: |
         git config user.name "github-actions[bot]"
@@ -172,8 +168,8 @@ jobs:
       run: |
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
-        git tag -a ${{ github.event.inputs.version }} -m "Release ${{ github.event.inputs.version }}"
-        git push origin ${{ github.event.inputs.version }}
+        git tag -fa ${{ github.event.inputs.version }} -m "Release ${{ github.event.inputs.version }}"
+        git push origin ${{ github.event.inputs.version }} --force
 
     - name: Rename artifacts for release
       run: |
