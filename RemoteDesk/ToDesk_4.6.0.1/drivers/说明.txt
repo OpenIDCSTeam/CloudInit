@@ -1,0 +1,12 @@
+如果在 XP - Win7 系统上, 有些 特殊对话框, 窗口 无法点击(显示)
+可以双击 instdrv.exe 然后重新连接远程即可.
+
+但是这个会修改 Win7系统自带的Aero 特效显示.
+
+卸载方法如下:
+
+DOS下输入:
+64位系统:
+MirrInst64.exe -u dfmirage
+32位系统:
+MirrInst32.exe -u dfmirage

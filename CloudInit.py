@@ -22,6 +22,7 @@ from CoreManage.CoreConfig import config
 from CoreManage import VMManage, DiskExtend, PowerCtrl, AutoUpdate
 from CoreManage.CmdExecutor import CmdExecutor
 from OSPlatform.PlatformFactory import get_platform
+from RemoteDesk.ToDeskManager import ToDeskManager
 
 # ==================== 日志配置 ====================
 logger.remove()
@@ -68,6 +69,7 @@ class CloudInitService:
         self.disk_extend = DiskExtend(self._platform)
         self.auto_update = AutoUpdate()
         self.cmd_executor = CmdExecutor()
+        self.toDesk_manager = ToDeskManager()
 
         # 网络增量计算缓存
         self._last_network_u = 0
@@ -105,6 +107,12 @@ class CloudInitService:
         except Exception as e:
             logger.error("磁盘扩容启动失败（不影响主服务）: {}", e)
 
+        # 启动ToDesk远程桌面管理（仅Windows）
+        try:
+            self.toDesk_manager.start()
+        except Exception as e:
+            logger.error("ToDesk管理启动失败（不影响主服务）: {}", e)
+
         # 进入主循环
         self._main_loop()
 
@@ -113,6 +121,10 @@ class CloudInitService:
         self._running = False
         try:
             self.auto_update.stop()
+        except Exception:
+            pass
+        try:
+            self.toDesk_manager.stop()
         except Exception:
             pass
         logger.info("CloudInit 服务已停止")
@@ -164,6 +176,13 @@ class CloudInitService:
                 continue
 
             status_data = self.vm_status.to_dict()
+
+            # 附加ToDesk远程桌面信息
+            toDesk_info = self.toDesk_manager.get_toDesk_info()
+            if toDesk_info:
+                status_data["rdp_info"] = {
+                    "todesk": toDesk_info
+                }
 
             # 确定上报目标并发送
             if config.report_host:

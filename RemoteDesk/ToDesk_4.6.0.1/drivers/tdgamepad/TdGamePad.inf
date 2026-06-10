@@ -1,0 +1,79 @@
+[Version]
+Signature="$WINDOWS NT$"
+Class=System
+ClassGuid={4D36E97D-E325-11CE-BFC1-08002BE10318}
+Provider=%ManufacturerName%
+CatalogFile=TdGamePad.cat
+DriverVer = 06/02/2022,1.0.0.0
+PnpLockdown=1
+
+[DestinationDirs]
+DefaultDestDir = 12
+TdGamePad_Device_CoInstaller_CopyFiles = 11
+
+[SourceDisksNames]
+1 = %DiskName%,,,
+
+[SourceDisksFiles]
+TdGamePad.sys = 1,,
+;
+
+
+;*****************************************
+; Install Section
+;*****************************************
+
+[Manufacturer]
+%ManufacturerName%=Standard,NTamd64,NTx86
+
+[Standard.NTamd64]
+%TdGamePad.DeviceDesc%=TdGamePad_Device, ToDesk\TdGamePad\Gen1
+
+[Standard.NTx86]
+%TdGamePad.DeviceDesc%=TdGamePad_Device, ToDesk\TdGamePad\Gen1
+
+[TdGamePad_Device.NT]
+CopyFiles=Drivers_Dir
+
+[Drivers_Dir]
+TdGamePad.sys
+
+;-------------- Service installation
+[TdGamePad_Device.NT.Services]
+AddService = TdGamePad,%SPSVCINST_ASSOCSERVICE%, TdGamePad_Service_Inst
+
+; -------------- TdGamePad driver install sections
+[TdGamePad_Service_Inst]
+DisplayName    = %TdGamePad.SVCDESC%
+ServiceType    = 1               ; SERVICE_KERNEL_DRIVER
+StartType      = 1               ; SERVICE_SYSTEM_START
+ErrorControl   = 1               ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %12%\TdGamePad.sys
+
+;
+;--- TdGamePad_Device Coinstaller installation ------
+;
+
+[TdGamePad_Device.NT.CoInstallers]
+AddReg=TdGamePad_Device_CoInstaller_AddReg
+CopyFiles=TdGamePad_Device_CoInstaller_CopyFiles
+
+[TdGamePad_Device_CoInstaller_AddReg]
+;
+
+
+[TdGamePad_Device_CoInstaller_CopyFiles]
+;
+
+
+[TdGamePad_Device.NT.Wdf]
+KmdfService =  TdGamePad, TdGamePad_wdfsect
+[TdGamePad_wdfsect]
+KmdfLibraryVersion = 1.15
+
+[Strings]
+SPSVCINST_ASSOCSERVICE= 0x00000002
+ManufacturerName="Hainan YouQu Info Tech"
+DiskName = "ToDesk TdGamePad Installation Disk"
+TdGamePad.DeviceDesc = "ToDesk Virtual Gamepad Emulation Bus"
+TdGamePad.SVCDESC = "ToDesk Virtual Gamepad Emulation Service"
