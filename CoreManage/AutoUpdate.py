@@ -6,6 +6,7 @@
 2. 发现新版本后下载对应平台的二进制文件
 3. 替换当前可执行文件并重启服务
 """
+from __future__ import annotations
 
 import os
 import sys

@@ -5,6 +5,7 @@ ToDesk远程桌面管理模块
 2. 定期执行ToDeskSunDump.exe -a 获取设备代码和临时密码
 3. 将获取到的信息提供给上报模块
 """
+from __future__ import annotations
 
 import os
 import re
