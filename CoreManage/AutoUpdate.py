@@ -14,6 +14,7 @@ import time
 import platform
 import subprocess
 import threading
+from typing import Optional
 
 import requests
 from loguru import logger
@@ -49,7 +50,7 @@ class AutoUpdate:
 
     def __init__(self):
         self._running = False
-        self._thread: threading.Thread | None = None
+        self._thread: Optional[threading.Thread] = None
 
     @property
     def repo_url(self) -> str:
@@ -376,7 +377,7 @@ class AutoUpdate:
         return "x64"
 
     @staticmethod
-    def _find_platform_asset(assets: list, system: str) -> dict | None:
+    def _find_platform_asset(assets: list, system: str) -> Optional[dict]:
         """
         根据当前平台和架构匹配对应的Release资产。
 

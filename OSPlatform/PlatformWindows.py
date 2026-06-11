@@ -1,4 +1,5 @@
 import os
+import sys
 import subprocess
 
 from loguru import logger
@@ -100,32 +101,48 @@ class PlatformWindows(PlatformBase):
 
         def _do_check_and_uninstall():
             try:
-                # 检测虚拟化环境（通过WMI查询BIOS信息）
-                result = self._run_cmd(
-                    ["wmic", "bios", "get", "serialnumber,manufacturer", "/format:list"],
-                    shell=True
-                )
-                bios_info = result.stdout.lower() if result.returncode == 0 else ""
+                # 检测虚拟化环境（多种方式综合判断）
+                is_vmware = False
 
-                # 检测计算机系统制造商
-                result2 = self._run_cmd(
-                    ["wmic", "computersystem", "get", "manufacturer,model", "/format:list"],
-                    shell=True
-                )
-                system_info = result2.stdout.lower() if result2.returncode == 0 else ""
+                # 方法1：通过wmic查询硬件信息（Win7/Win10兼容）
+                combined_info = ""
+                wmic_cmds = [
+                    "wmic bios get serialnumber,manufacturer /format:list",
+                    "wmic computersystem get manufacturer,model /format:list",
+                    "wmic baseboard get manufacturer,product /format:list",
+                ]
+                for cmd in wmic_cmds:
+                    result = self._run_cmd(cmd, shell=True)
+                    if result.returncode == 0:
+                        combined_info += result.stdout.lower() + "\n"
 
-                # 检测基板信息
-                result3 = self._run_cmd(
-                    ["wmic", "baseboard", "get", "manufacturer,product", "/format:list"],
-                    shell=True
-                )
-                board_info = result3.stdout.lower() if result3.returncode == 0 else ""
+                # 方法2：wmic不可用时（Win11），用PowerShell查询
+                if not combined_info.strip():
+                    ps_cmd = (
+                        "powershell -NoProfile -Command \""
+                        "(Get-CimInstance Win32_BIOS | Select-Object Manufacturer,SerialNumber | Format-List);"
+                        "(Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer,Model | Format-List);"
+                        "(Get-CimInstance Win32_BaseBoard | Select-Object Manufacturer,Product | Format-List)"
+                        "\""
+                    )
+                    result = self._run_cmd(ps_cmd, shell=True)
+                    if result.returncode == 0:
+                        combined_info = result.stdout.lower()
 
-                combined_info = bios_info + system_info + board_info
-
-                # 判断是否为VMware/ESXi环境
                 vmware_keywords = ["vmware", "esxi"]
-                is_vmware = any(kw in combined_info for kw in vmware_keywords)
+                if any(kw in combined_info for kw in vmware_keywords):
+                    is_vmware = True
+
+                # 方法3：通过systeminfo检测（兜底）
+                if not is_vmware:
+                    sysinfo_result = self._run_cmd(
+                        ["systeminfo"],
+                        shell=True
+                    )
+                    if sysinfo_result.returncode == 0:
+                        sysinfo_lower = sysinfo_result.stdout.lower()
+                        if "vmware" in sysinfo_lower or "esxi" in sysinfo_lower:
+                            is_vmware = True
 
                 if is_vmware:
                     logger.info("[VMTools管理] 检测到VMware/ESXi虚拟化环境，保留VMware Tools")
@@ -148,19 +165,26 @@ class PlatformWindows(PlatformBase):
                 logger.info("[VMTools管理] 检测到VMware Tools已安装，开始静默卸载")
 
                 # 尝试通过MsiExec静默卸载（VMware Tools通常通过MSI安装）
-                # 先获取产品GUID
+                # 先尝试wmic获取GUID（Win7兼容），失败再用PowerShell（Win11）
+                product_guid = ""
                 guid_result = self._run_cmd(
-                    ["wmic", "product", "where", "name='VMware Tools'",
-                     "get", "IdentifyingNumber", "/format:list"],
+                    'wmic product where "name=\'VMware Tools\'" get IdentifyingNumber /format:list',
                     shell=True
                 )
-
-                product_guid = ""
                 if guid_result.returncode == 0 and "IdentifyingNumber=" in guid_result.stdout:
                     for line in guid_result.stdout.splitlines():
                         if line.startswith("IdentifyingNumber="):
                             product_guid = line.split("=", 1)[1].strip()
                             break
+
+                if not product_guid:
+                    # wmic不可用（Win11），尝试PowerShell
+                    guid_result = self._run_cmd(
+                        'powershell -NoProfile -Command "(Get-CimInstance Win32_Product | Where-Object {$_.Name -eq \'VMware Tools\'}).IdentifyingNumber"',
+                        shell=True
+                    )
+                    if guid_result.returncode == 0 and guid_result.stdout.strip():
+                        product_guid = guid_result.stdout.strip()
 
                 if product_guid:
                     # 使用MsiExec静默卸载
@@ -187,13 +211,17 @@ class PlatformWindows(PlatformBase):
                             timeout=300
                         )
                     else:
-                        # 最终备用：使用wmic卸载
-                        logger.info("[VMTools管理] 卸载程序不存在，使用wmic卸载")
+                        # 最终备用：通过wmic卸载（Win7）或PowerShell卸载（Win11）
+                        logger.info("[VMTools管理] 卸载程序不存在，尝试wmic/PowerShell卸载")
                         result_uninstall = self._run_cmd(
-                            ["wmic", "product", "where", "name='VMware Tools'",
-                             "call", "uninstall", "/nointeractive"],
+                            'wmic product where "name=\'VMware Tools\'" call uninstall /nointeractive',
                             shell=True
                         )
+                        if result_uninstall.returncode != 0:
+                            result_uninstall = self._run_cmd(
+                                'powershell -NoProfile -Command "Get-CimInstance Win32_Product | Where-Object {$_.Name -eq \'VMware Tools\'} | Invoke-CimMethod -MethodName Uninstall"',
+                                shell=True
+                            )
 
                 if result_uninstall.returncode == 0:
                     logger.info("[VMTools管理] VMware Tools 静默卸载完成")
@@ -224,8 +252,11 @@ class PlatformWindows(PlatformBase):
 
         def _do_activate():
             try:
-                # 获取MASAIO.cmd脚本路径（与CloudInit同目录）
-                script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                # 获取MASAIO.cmd脚本路径（与CloudInit.exe同目录）
+                if getattr(sys, 'frozen', False):
+                    script_dir = os.path.dirname(sys.executable)
+                else:
+                    script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                 masaio_path = os.path.join(script_dir, "MASAIO.cmd")
 
                 if not os.path.exists(masaio_path):

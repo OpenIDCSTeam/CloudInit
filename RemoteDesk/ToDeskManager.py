@@ -14,6 +14,7 @@ import subprocess
 import threading
 import time
 import platform
+from typing import Optional
 
 from loguru import logger
 
@@ -26,21 +27,18 @@ class ToDeskManager:
         self.device_code: str = ""  # 设备代码
         self.temp_password: str = ""  # 临时密码
         self._running = False
-        self._thread: threading.Thread | None = None
+        self._thread: Optional[threading.Thread] = None
         # 定期刷新间隔（秒）
         self._refresh_interval = 120  # 每2分钟刷新一次
 
-        # 获取当前程序所在目录
-        # PyInstaller打包后__file__指向临时解压目录，需用sys.executable定位实际exe目录
+        # 获取exe所在目录（打包后和开发环境统一处理）
         if getattr(sys, 'frozen', False):
-            # 打包环境：使用exe所在目录下的RemoteDesk
-            self._base_dir = os.path.join(os.path.dirname(sys.executable), "RemoteDesk")
+            self._base_dir = os.path.dirname(sys.executable)
         else:
-            # 开发环境：使用源码目录
-            self._base_dir = os.path.dirname(os.path.abspath(__file__))
+            self._base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         # ToDesk目录
         self._toDesk_dir = os.path.join(self._base_dir, "ToDesk_4.6.0.1")
-        # ToDeskSunDump.exe路径（与ToDeskManager同目录）
+        # ToDeskSunDump.exe路径（与exe同目录）
         self._dump_exe = os.path.join(self._base_dir, "ToDeskSunDump.exe")
 
     def start(self):
