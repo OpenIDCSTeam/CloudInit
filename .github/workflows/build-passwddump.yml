@@ -1,0 +1,212 @@
+name: Build & Release PasswdDump
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'PasswdDump/**'
+      - '.github/workflows/build-passwddump.yml'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'PasswdDump/**'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '发布版本号 (例如 v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          # Win10+ x64
+          - os: windows-latest
+            name: win10
+            arch: amd64
+            goarch: amd64
+            artifact-name: passwddump-win10-x64
+
+          # Win10+ x86
+          - os: windows-latest
+            name: win10
+            arch: '386'
+            goarch: '386'
+            artifact-name: passwddump-win10-x86
+
+          # Win7 x64 (使用较旧的Go编译参数确保兼容性)
+          - os: windows-latest
+            name: win7
+            arch: amd64
+            goarch: amd64
+            artifact-name: passwddump-win7-x64
+
+          # Win7 x86
+          - os: windows-latest
+            name: win7
+            arch: '386'
+            goarch: '386'
+            artifact-name: passwddump-win7-x86
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.23'
+        cache-dependency-path: PasswdDump/go.sum
+
+    - name: Build (Win10+)
+      if: matrix.name == 'win10'
+      shell: cmd
+      working-directory: PasswdDump
+      run: |
+        set GOOS=windows
+        set GOARCH=${{ matrix.goarch }}
+        set CGO_ENABLED=0
+        go build -trimpath -ldflags="-s -w" -o ToDeskSunDump.exe .
+
+    - name: Build (Win7 兼容)
+      if: matrix.name == 'win7'
+      shell: cmd
+      working-directory: PasswdDump
+      run: |
+        set GOOS=windows
+        set GOARCH=${{ matrix.goarch }}
+        set CGO_ENABLED=0
+        go build -trimpath -ldflags="-s -w" -o ToDeskSunDump.exe .
+
+    - name: Create artifact
+      shell: cmd
+      run: |
+        if not exist "dist-artifact" mkdir dist-artifact
+        copy PasswdDump\ToDeskSunDump.exe dist-artifact\
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.artifact-name }}
+        path: dist-artifact/
+        retention-days: 30
+
+  # Push 自动发布到 beta release
+  release-beta:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Display structure of downloaded files
+      run: ls -R artifacts
+
+    - name: Create/Update beta tag
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag -fa passwddump-beta -m "PasswdDump Beta build from ${{ github.sha }}"
+        git push origin passwddump-beta --force
+
+    - name: Rename artifacts for release
+      run: |
+        mv artifacts/passwddump-win10-x64/ToDeskSunDump.exe artifacts/passwddump-win10-x64/ToDeskSunDump-win10-x64.exe
+        mv artifacts/passwddump-win10-x86/ToDeskSunDump.exe artifacts/passwddump-win10-x86/ToDeskSunDump-win10-x86.exe
+        mv artifacts/passwddump-win7-x64/ToDeskSunDump.exe artifacts/passwddump-win7-x64/ToDeskSunDump-win7-x64.exe
+        mv artifacts/passwddump-win7-x86/ToDeskSunDump.exe artifacts/passwddump-win7-x86/ToDeskSunDump-win7-x86.exe
+
+    - name: Create/Update Beta Release
+      uses: softprops/action-gh-release@v1
+      with:
+        fail_on_unmatched_files: false
+        files: |
+          artifacts/passwddump-win10-x64/ToDeskSunDump-win10-x64.exe
+          artifacts/passwddump-win10-x86/ToDeskSunDump-win10-x86.exe
+          artifacts/passwddump-win7-x64/ToDeskSunDump-win7-x64.exe
+          artifacts/passwddump-win7-x86/ToDeskSunDump-win7-x86.exe
+        tag_name: passwddump-beta
+        name: PasswdDump Beta Build (Latest)
+        body: |
+          🚧 **PasswdDump 自动构建的 Beta 版本**
+          
+          提交: ${{ github.sha }}
+          分支: ${{ github.ref_name }}
+          
+          **兼容性说明：**
+          - `win10-*`: 适用于 Windows 10/11
+          - `win7-*`: 适用于 Windows 7/8/8.1 及以上
+          
+          > 此版本随每次 push 自动更新，仅供测试使用。
+        draft: false
+        prerelease: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 手动触发发布正式版本
+  release-stable:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Display structure of downloaded files
+      run: ls -R artifacts
+
+    - name: Create version tag
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag -fa passwddump-${{ github.event.inputs.version }} -m "PasswdDump Release ${{ github.event.inputs.version }}"
+        git push origin passwddump-${{ github.event.inputs.version }} --force
+
+    - name: Rename artifacts for release
+      run: |
+        mv artifacts/passwddump-win10-x64/ToDeskSunDump.exe artifacts/passwddump-win10-x64/ToDeskSunDump-win10-x64.exe
+        mv artifacts/passwddump-win10-x86/ToDeskSunDump.exe artifacts/passwddump-win10-x86/ToDeskSunDump-win10-x86.exe
+        mv artifacts/passwddump-win7-x64/ToDeskSunDump.exe artifacts/passwddump-win7-x64/ToDeskSunDump-win7-x64.exe
+        mv artifacts/passwddump-win7-x86/ToDeskSunDump.exe artifacts/passwddump-win7-x86/ToDeskSunDump-win7-x86.exe
+
+    - name: Create Stable Release
+      uses: softprops/action-gh-release@v1
+      with:
+        fail_on_unmatched_files: false
+        files: |
+          artifacts/passwddump-win10-x64/ToDeskSunDump-win10-x64.exe
+          artifacts/passwddump-win10-x86/ToDeskSunDump-win10-x86.exe
+          artifacts/passwddump-win7-x64/ToDeskSunDump-win7-x64.exe
+          artifacts/passwddump-win7-x86/ToDeskSunDump-win7-x86.exe
+        tag_name: passwddump-${{ github.event.inputs.version }}
+        name: PasswdDump ${{ github.event.inputs.version }}
+        body: |
+          📦 **PasswdDump ${{ github.event.inputs.version }}**
+          
+          **兼容性说明：**
+          - `win10-*`: 适用于 Windows 10/11
+          - `win7-*`: 适用于 Windows 7/8/8.1 及以上
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
