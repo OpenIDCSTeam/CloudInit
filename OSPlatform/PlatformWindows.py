@@ -164,6 +164,21 @@ class PlatformWindows(PlatformBase):
 
                 logger.info("[VMTools管理] 检测到VMware Tools已安装，开始静默卸载")
 
+                # 卸载前先强制结束VM相关进程
+                vm_processes = [
+                    "vmtoolsd.exe", "vmwaretray.exe", "vmacthlp.exe",
+                    "VGAuthService.exe", "vm3dservice.exe", "vmwareuser.exe"
+                ]
+                for proc in vm_processes:
+                    self._run_cmd(f'taskkill /F /IM {proc}', shell=True)
+
+                # 停止VM相关服务
+                vm_services = ["VMTools", "VGAuthService", "vm3dservice", "VMwarePhysicalDiskHelper", "VMUSBArbService"]
+                for svc in vm_services:
+                    self._run_cmd(f'net stop {svc}', shell=True)
+
+                logger.info("[VMTools管理] 已结束VM相关进程和服务")
+
                 # 尝试通过MsiExec静默卸载（VMware Tools通常通过MSI安装）
                 # 先尝试wmic获取GUID（Win7兼容），失败再用PowerShell（Win11）
                 product_guid = ""
