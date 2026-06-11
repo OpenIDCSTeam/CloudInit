@@ -36,9 +36,8 @@ class ToDeskManager:
             self._base_dir = os.path.dirname(sys.executable)
         else:
             self._base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        # ToDesk目录
-        self._toDesk_dir = os.path.join(self._base_dir, "ToDesk_4.6.0.1")
-        # ToDeskSunDump.exe路径（与exe同目录）
+        # ToDesk.exe和ToDeskSunDump.exe都在exe同目录
+        self._toDesk_dir = self._base_dir
         self._dump_exe = os.path.join(self._base_dir, "ToDeskSunDump.exe")
 
     def start(self):
@@ -120,7 +119,6 @@ class ToDeskManager:
             result = subprocess.run(
                 [self._dump_exe, "-a"],
                 capture_output=True,
-                text=True,
                 timeout=30,
                 cwd=os.path.dirname(self._dump_exe),
             )
@@ -129,7 +127,16 @@ class ToDeskManager:
                 logger.warning("[ToDesk] ToDeskSunDump.exe执行失败，返回码: {}", result.returncode)
                 return
 
-            output = result.stdout
+            # 手动解码，优先UTF-8，失败则尝试GBK，均失败则替换错误字符
+            raw = result.stdout
+            try:
+                output = raw.decode("utf-8")
+            except (UnicodeDecodeError, AttributeError):
+                try:
+                    output = raw.decode("gbk")
+                except (UnicodeDecodeError, AttributeError):
+                    output = raw.decode("utf-8", errors="replace")
+
             if not output:
                 logger.warning("[ToDesk] ToDeskSunDump.exe无输出")
                 return

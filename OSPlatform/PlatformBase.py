@@ -103,6 +103,6 @@ class PlatformBase(ABC):
         return thread
 
     @staticmethod
-    def _run_cmd(cmd: list, **kwargs) -> subprocess.CompletedProcess:
+    def _run_cmd(cmd, **kwargs) -> subprocess.CompletedProcess:
         """执行命令的通用封装"""
-        return subprocess.run(cmd, capture_output=True, text=True, **kwargs)
+        return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", **kwargs)

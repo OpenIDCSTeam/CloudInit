@@ -55,7 +55,7 @@ class PlatformWindows(PlatformBase):
             powershell_cmd = f'Rename-Computer -NewName "{hostname}" -Force'
             result = subprocess.run(
                 ["powershell", "-Command", powershell_cmd],
-                capture_output=True, text=True, shell=True
+                capture_output=True, text=True, encoding="utf-8", errors="replace", shell=True
             )
             if result.returncode == 0:
                 logger.info("[Windows主机名] Rename-Computer 设置成功，需要重启后生效: {}", hostname)
@@ -209,6 +209,8 @@ class PlatformWindows(PlatformBase):
                         uninstall_cmd,
                         capture_output=True,
                         text=True,
+                        encoding="utf-8",
+                        errors="replace",
                         shell=True,
                         timeout=300
                     )
@@ -223,6 +225,8 @@ class PlatformWindows(PlatformBase):
                             [uninstaller, "/S"],
                             capture_output=True,
                             text=True,
+                            encoding="utf-8",
+                            errors="replace",
                             timeout=300
                         )
                     else:
@@ -312,6 +316,8 @@ class PlatformWindows(PlatformBase):
                     cmd,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     shell=True,
                     timeout=300  # 5分钟超时
                 )
