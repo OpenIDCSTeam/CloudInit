@@ -41,7 +41,7 @@ jobs:
             artifact-name: cloudinit-macos-a64
             ext: ''
 
-          - os: macos-13
+          - os: macos-15-intel
             name: macos
             arch: x64
             python-version: '3.11'
@@ -69,14 +69,14 @@ jobs:
             artifact-name: cloudinit-win10-a64
             ext: '.exe'
 
-          - os: windows-2019
+          - os: windows-2022
             name: win78
             arch: x64
             python-version: '3.8'
             artifact-name: cloudinit-win78-x64
             ext: '.exe'
 
-          - os: windows-2019
+          - os: windows-2022
             name: win78
             arch: x86
             python-version: '3.8'
