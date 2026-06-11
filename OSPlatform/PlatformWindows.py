@@ -88,3 +88,201 @@ class PlatformWindows(PlatformBase):
 
     def _get_hosts_path(self) -> str:
         return r"C:\Windows\System32\drivers\etc\hosts"
+
+    # ==================== VMware Tools管理 ====================
+
+    def uninstall_vmtools_if_not_vmware(self):
+        """
+        检测虚拟化环境，如果不是VMware/ESXi环境则静默卸载VMware Tools
+        避免非VMware环境下VMTools残留导致的兼容性问题
+        """
+        import threading
+
+        def _do_check_and_uninstall():
+            try:
+                # 检测虚拟化环境（通过WMI查询BIOS信息）
+                result = self._run_cmd(
+                    ["wmic", "bios", "get", "serialnumber,manufacturer", "/format:list"],
+                    shell=True
+                )
+                bios_info = result.stdout.lower() if result.returncode == 0 else ""
+
+                # 检测计算机系统制造商
+                result2 = self._run_cmd(
+                    ["wmic", "computersystem", "get", "manufacturer,model", "/format:list"],
+                    shell=True
+                )
+                system_info = result2.stdout.lower() if result2.returncode == 0 else ""
+
+                # 检测基板信息
+                result3 = self._run_cmd(
+                    ["wmic", "baseboard", "get", "manufacturer,product", "/format:list"],
+                    shell=True
+                )
+                board_info = result3.stdout.lower() if result3.returncode == 0 else ""
+
+                combined_info = bios_info + system_info + board_info
+
+                # 判断是否为VMware/ESXi环境
+                vmware_keywords = ["vmware", "esxi"]
+                is_vmware = any(kw in combined_info for kw in vmware_keywords)
+
+                if is_vmware:
+                    logger.info("[VMTools管理] 检测到VMware/ESXi虚拟化环境，保留VMware Tools")
+                    return
+
+                logger.info("[VMTools管理] 非VMware/ESXi环境，检查是否安装了VMware Tools")
+
+                # 检查VMware Tools是否已安装（通过注册表查询卸载信息）
+                result_check = self._run_cmd(
+                    ["reg", "query",
+                     r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+                     "/s", "/f", "VMware Tools"],
+                    shell=True
+                )
+
+                if result_check.returncode != 0 or "VMware Tools" not in result_check.stdout:
+                    logger.info("[VMTools管理] 未检测到VMware Tools安装，无需卸载")
+                    return
+
+                logger.info("[VMTools管理] 检测到VMware Tools已安装，开始静默卸载")
+
+                # 尝试通过MsiExec静默卸载（VMware Tools通常通过MSI安装）
+                # 先获取产品GUID
+                guid_result = self._run_cmd(
+                    ["wmic", "product", "where", "name='VMware Tools'",
+                     "get", "IdentifyingNumber", "/format:list"],
+                    shell=True
+                )
+
+                product_guid = ""
+                if guid_result.returncode == 0 and "IdentifyingNumber=" in guid_result.stdout:
+                    for line in guid_result.stdout.splitlines():
+                        if line.startswith("IdentifyingNumber="):
+                            product_guid = line.split("=", 1)[1].strip()
+                            break
+
+                if product_guid:
+                    # 使用MsiExec静默卸载
+                    logger.info("[VMTools管理] 找到VMware Tools GUID: {}，执行静默卸载", product_guid)
+                    uninstall_cmd = f'msiexec /x {product_guid} /qn /norestart'
+                    result_uninstall = subprocess.run(
+                        uninstall_cmd,
+                        capture_output=True,
+                        text=True,
+                        shell=True,
+                        timeout=300
+                    )
+                else:
+                    # 备用方案：直接调用VMware Tools卸载程序
+                    logger.info("[VMTools管理] 未找到GUID，尝试直接调用卸载程序")
+                    vmtools_path = r"C:\Program Files\VMware\VMware Tools"
+                    uninstaller = os.path.join(vmtools_path, "VMwareToolsUninstaller.exe")
+
+                    if os.path.exists(uninstaller):
+                        result_uninstall = subprocess.run(
+                            [uninstaller, "/S"],
+                            capture_output=True,
+                            text=True,
+                            timeout=300
+                        )
+                    else:
+                        # 最终备用：使用wmic卸载
+                        logger.info("[VMTools管理] 卸载程序不存在，使用wmic卸载")
+                        result_uninstall = self._run_cmd(
+                            ["wmic", "product", "where", "name='VMware Tools'",
+                             "call", "uninstall", "/nointeractive"],
+                            shell=True
+                        )
+
+                if result_uninstall.returncode == 0:
+                    logger.info("[VMTools管理] VMware Tools 静默卸载完成")
+                else:
+                    logger.warning("[VMTools管理] VMware Tools 卸载返回码: {}", result_uninstall.returncode)
+                    if hasattr(result_uninstall, 'stderr') and result_uninstall.stderr:
+                        logger.debug("[VMTools管理] 卸载错误输出: {}", result_uninstall.stderr[:500])
+
+            except subprocess.TimeoutExpired:
+                logger.warning("[VMTools管理] 卸载操作超时")
+            except Exception as e:
+                logger.error("[VMTools管理] 检测/卸载过程异常: {}", e)
+
+        # 异步执行检测和卸载
+        thread = threading.Thread(target=_do_check_and_uninstall, daemon=True, name="VMToolsCheckThread")
+        thread.start()
+        logger.info("[VMTools管理] 已启动异步虚拟化环境检测线程")
+
+    # ==================== Windows激活 ====================
+
+    def activate_windows(self):
+        """
+        异步激活Windows系统
+        Win10/11使用HWID方式，Win7/8等旧版本使用TSforge方式
+        """
+        import platform
+        import threading
+
+        def _do_activate():
+            try:
+                # 获取MASAIO.cmd脚本路径（与CloudInit同目录）
+                script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                masaio_path = os.path.join(script_dir, "MASAIO.cmd")
+
+                if not os.path.exists(masaio_path):
+                    logger.warning("[Windows激活] 激活脚本不存在: {}", masaio_path)
+                    return
+
+                # 检查是否已激活
+                result = self._run_cmd(
+                    ["cscript", "//nologo", r"C:\Windows\System32\slmgr.vbs", "/xpr"],
+                    shell=True
+                )
+                if result.returncode == 0 and "永久激活" in result.stdout:
+                    logger.info("[Windows激活] 系统已永久激活，跳过")
+                    return
+                if result.returncode == 0 and "permanently activated" in result.stdout.lower():
+                    logger.info("[Windows激活] 系统已永久激活，跳过")
+                    return
+
+                # 根据Windows版本选择激活方式
+                win_ver = platform.version()  # 如 "10.0.19041"
+                major_ver = int(win_ver.split(".")[0]) if win_ver else 0
+                build_number = int(win_ver.split(".")[2]) if len(win_ver.split(".")) >= 3 else 0
+
+                if major_ver >= 10:
+                    # Win10/11 使用 HWID 方式
+                    activate_param = "/HWID /S"
+                    method_name = "HWID"
+                else:
+                    # Win7/8/8.1 使用 TSforge 方式
+                    activate_param = "/Z-Windows /S"
+                    method_name = "TSforge"
+
+                logger.info("[Windows激活] 使用 {} 方式激活 (版本: {})", method_name, win_ver)
+
+                # 执行激活脚本
+                cmd = f'cmd.exe /c "{masaio_path}" {activate_param}'
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    shell=True,
+                    timeout=300  # 5分钟超时
+                )
+
+                if result.returncode == 0:
+                    logger.info("[Windows激活] {} 激活执行完成", method_name)
+                else:
+                    logger.warning("[Windows激活] {} 激活返回码: {}", method_name, result.returncode)
+                    if result.stderr:
+                        logger.debug("[Windows激活] 错误输出: {}", result.stderr[:500])
+
+            except subprocess.TimeoutExpired:
+                logger.warning("[Windows激活] 激活脚本执行超时")
+            except Exception as e:
+                logger.error("[Windows激活] 激活过程异常: {}", e)
+
+        # 异步执行激活
+        thread = threading.Thread(target=_do_activate, daemon=True, name="WinActivateThread")
+        thread.start()
+        logger.info("[Windows激活] 已启动异步激活线程")

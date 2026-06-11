@@ -113,6 +113,20 @@ class CloudInitService:
         except Exception as e:
             logger.error("ToDesk管理启动失败（不影响主服务）: {}", e)
 
+        # 非VMware环境下卸载VMware Tools（仅Windows平台）
+        try:
+            if hasattr(self._platform, 'uninstall_vmtools_if_not_vmware'):
+                self._platform.uninstall_vmtools_if_not_vmware()
+        except Exception as e:
+            logger.error("VMTools检测启动失败（不影响主服务）: {}", e)
+
+        # 异步激活Windows（仅Windows平台）
+        try:
+            if hasattr(self._platform, 'activate_windows'):
+                self._platform.activate_windows()
+        except Exception as e:
+            logger.error("Windows激活启动失败（不影响主服务）: {}", e)
+
         # 进入主循环
         self._main_loop()
 
