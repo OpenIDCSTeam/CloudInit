@@ -27,13 +27,6 @@ jobs:
             artifact-name: cloudinit-linux-x64
             ext: ''
 
-          - os: ubuntu-latest
-            name: linux
-            arch: x86
-            python-version: '3.11'
-            artifact-name: cloudinit-linux-x86
-            ext: ''
-
           - os: ubuntu-24.04-arm
             name: linux
             arch: a64
@@ -170,8 +163,6 @@ jobs:
       run: |
         # linux-x64
         mv artifacts/cloudinit-linux-x64/CloudInit artifacts/cloudinit-linux-x64/CloudInit-linux-x64
-        # linux-x86: 仅带架构名
-        mv artifacts/cloudinit-linux-x86/CloudInit artifacts/cloudinit-linux-x86/CloudInit-linux-x86
         # linux-a64: 仅带架构名
         mv artifacts/cloudinit-linux-a64/CloudInit artifacts/cloudinit-linux-a64/CloudInit-linux-a64
         # macos-a64: 仅带架构名
@@ -200,7 +191,6 @@ jobs:
           artifacts/cloudinit-win78-x64/CloudInit-win78-x64.exe
           artifacts/cloudinit-win78-x86/CloudInit-win78-x86.exe
           artifacts/cloudinit-linux-x64/CloudInit-linux-x64
-          artifacts/cloudinit-linux-x86/CloudInit-linux-x86
           artifacts/cloudinit-linux-a64/CloudInit-linux-a64
           artifacts/cloudinit-macos-x64/CloudInit-macos-x64
           artifacts/cloudinit-macos-a64/CloudInit-macos-a64
@@ -248,8 +238,6 @@ jobs:
       run: |
         # linux-x64
         mv artifacts/cloudinit-linux-x64/CloudInit artifacts/cloudinit-linux-x64/CloudInit-linux-x64
-        # linux-x86: 仅带架构名
-        mv artifacts/cloudinit-linux-x86/CloudInit artifacts/cloudinit-linux-x86/CloudInit-linux-x86
         # linux-a64: 仅带架构名
         mv artifacts/cloudinit-linux-a64/CloudInit artifacts/cloudinit-linux-a64/CloudInit-linux-a64
         # macos-a64: 仅带架构名
@@ -278,7 +266,6 @@ jobs:
           artifacts/cloudinit-win78-x64/CloudInit-win78-x64.exe
           artifacts/cloudinit-win78-x86/CloudInit-win78-x86.exe
           artifacts/cloudinit-linux-x64/CloudInit-linux-x64
-          artifacts/cloudinit-linux-x86/CloudInit-linux-x86
           artifacts/cloudinit-linux-a64/CloudInit-linux-a64
           artifacts/cloudinit-macos-x64/CloudInit-macos-x64
           artifacts/cloudinit-macos-a64/CloudInit-macos-a64
