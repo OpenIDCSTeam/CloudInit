@@ -90,15 +90,24 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Set up Python ${{ matrix.python-version }}
+      if: matrix.arch != 'a64'
       uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
         architecture: ${{ matrix.arch == 'x86' && 'x86' || 'x64' }}
 
+    - name: Set up Python ${{ matrix.python-version }} (ARM64)
+      if: matrix.arch == 'a64'
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
     - name: Cache pip packages
       uses: actions/cache@v4
       with:
-        path: ~/.cache/pip
+        path: |
+          ~/.cache/pip
+          ~\AppData\Local\pip\Cache
         key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ matrix.arch }}-${{ hashFiles('requirements.txt') }}
         restore-keys: |
           ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ matrix.arch }}-
@@ -109,7 +118,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip setuptools wheel
         pip install pyinstaller
-        pip install netifaces requests GPUtil psutil py-cpuinfo urllib3 loguru
+        pip install netifaces requests GPUtil psutil loguru
 
     - name: Build with PyInstaller
       run: |
@@ -117,8 +126,9 @@ jobs:
 
     - name: Create artifact (Windows)
       if: runner.os == 'Windows'
+      shell: cmd
       run: |
-        mkdir dist-artifact
+        if not exist "dist-artifact" mkdir dist-artifact
         copy dist\CloudInit${{ matrix.ext }} dist-artifact\
 
     - name: Create artifact (Linux/Mac)
