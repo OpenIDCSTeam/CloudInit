@@ -71,27 +71,46 @@ class ToDeskManager:
         return {}
 
     def _start_toDesk(self):
-        """启动ToDesk.exe（不阻塞主进程）"""
+        """启动ToDesk.exe（不阻塞主进程），启动后隐藏主窗口"""
         toDesk_exe = os.path.join(self._toDesk_dir, "ToDesk.exe")
         if not os.path.exists(toDesk_exe):
             logger.warning("[ToDesk] ToDesk.exe不存在: {}", toDesk_exe)
             return
 
         try:
-            # 使用STARTUPINFO设置最小化启动，保留托盘图标供用户操作
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags = subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = 7  # SW_SHOWMINNOACTIVE: 最小化且不激活
             subprocess.Popen(
                 [toDesk_exe],
                 cwd=self._toDesk_dir,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                startupinfo=startupinfo,
             )
-            logger.info("[ToDesk] ToDesk.exe已启动(最小化): {}", toDesk_exe)
+            logger.info("[ToDesk] ToDesk.exe已启动: {}", toDesk_exe)
+            # 启动后台线程延迟隐藏窗口
+            threading.Thread(target=self._hide_toDesk_window, daemon=True).start()
         except Exception as e:
             logger.error("[ToDesk] 启动ToDesk.exe失败: {}", e)
+
+    @staticmethod
+    def _hide_toDesk_window():
+        """延迟隐藏ToDesk主窗口（保留托盘图标）"""
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            # 等待ToDesk窗口创建
+            for _ in range(15):
+                time.sleep(1)
+                # 尝试通过窗口标题查找ToDesk窗口
+                hwnd = user32.FindWindowW(None, "ToDesk")
+                if not hwnd:
+                    hwnd = user32.FindWindowW(None, "ToDesk\u8fdc\u7a0b\u63a7\u5236")
+                if hwnd:
+                    SW_HIDE = 0
+                    user32.ShowWindow(hwnd, SW_HIDE)
+                    logger.info("[ToDesk] 已隐藏ToDesk主窗口")
+                    return
+            logger.debug("[ToDesk] 未找到ToDesk窗口，跳过隐藏")
+        except Exception as e:
+            logger.debug("[ToDesk] 隐藏窗口失败: {}", e)
 
     def _refresh_loop(self):
         """定期刷新ToDesk设备代码和临时密码"""

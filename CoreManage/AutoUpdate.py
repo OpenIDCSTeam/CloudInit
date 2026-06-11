@@ -474,21 +474,29 @@ class AutoUpdate:
 
     @staticmethod
     def _replace_windows(exe_path: str, temp_path: str):
-        """Windows系统：生成批处理脚本，用PID精确终止当前进程后替换文件并重启"""
-        current_pid = os.getpid()
+        """
+        Windows系统：生成批处理脚本，等待旧进程退出后替换文件并重启。
+        注意：批处理不负责杀进程，由_restart_service中os._exit自行退出。
+        """
         batch_content = (
             '@echo off\n'
-            f'taskkill /F /PID {current_pid} >nul 2>&1\n'
-            'timeout /t 3 /nobreak >nul\n'
-            # 循环等待文件可删除（进程可能还未完全退出）
-            ':retry\n'
+            # 等待旧进程释放exe文件（循环检测直到可删除）
+            ':wait_exit\n'
             f'del /F "{exe_path}" >nul 2>&1\n'
             f'if exist "{exe_path}" (\n'
-            '    timeout /t 2 /nobreak >nul\n'
-            '    goto retry\n'
+            '    timeout /t 1 /nobreak >nul\n'
+            '    goto wait_exit\n'
             ')\n'
+            # 替换文件
             f'move /Y "{temp_path}" "{exe_path}"\n'
-            f'start "" "{exe_path}"\n'
+            'if errorlevel 1 (\n'
+            '    timeout /t 2 /nobreak >nul\n'
+            f'    move /Y "{temp_path}" "{exe_path}"\n'
+            ')\n'
+            # 启动新版本（使用start确保独立进程）
+            f'start "CloudInit" "{exe_path}"\n'
+            # 等待新进程启动后再删除自身
+            'timeout /t 3 /nobreak >nul\n'
             'del "%~f0"\n'
         )
         batch_path = os.path.join(os.path.dirname(exe_path), "_update.bat")
@@ -514,14 +522,19 @@ class AutoUpdate:
                 exe_path = AutoUpdate._get_executable_path()
                 batch_path = os.path.join(os.path.dirname(exe_path), "_update.bat")
                 if os.path.exists(batch_path):
-                    # 使用CREATE_NEW_PROCESS_GROUP确保批处理独立于当前进程
-                    flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+                    # 使用DETACHED_PROCESS确保批处理完全独立于当前进程
+                    DETACHED_PROCESS = 0x00000008
+                    CREATE_NO_WINDOW = 0x08000000
                     subprocess.Popen(
                         ["cmd.exe", "/c", batch_path],
-                        creationflags=flags,
-                        close_fds=True,
+                        creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
                     )
-                    # 强制退出当前进程，让批处理能删除exe
+                    # 等待一小段时间确保批处理进程已创建
+                    time.sleep(0.5)
+                    # 强制退出当前进程，释放exe文件锁
                     os._exit(0)
         except Exception as e:
             logger.error("[自动更新] 重启服务失败: {}", e)
