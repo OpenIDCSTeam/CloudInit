@@ -71,20 +71,22 @@ class ToDeskManager:
         return {}
 
     def _start_toDesk(self):
-        """启动ToDesk.exe（不阻塞主进程），启动后隐藏主窗口"""
+        """启动ToDesk.exe（通过start命令启动，不阻塞主进程），启动后隐藏主窗口"""
         toDesk_exe = os.path.join(self._toDesk_dir, "ToDesk.exe")
         if not os.path.exists(toDesk_exe):
             logger.warning("[ToDesk] ToDesk.exe不存在: {}", toDesk_exe)
             return
 
         try:
+            # 使用start命令启动ToDesk，确保其正常运行
             subprocess.Popen(
-                [toDesk_exe],
+                f'start "" "{toDesk_exe}"',
                 cwd=self._toDesk_dir,
+                shell=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            logger.info("[ToDesk] ToDesk.exe已启动: {}", toDesk_exe)
+            logger.info("[ToDesk] ToDesk.exe已通过start启动: {}", toDesk_exe)
             # 启动后台线程延迟隐藏窗口
             threading.Thread(target=self._hide_toDesk_window, daemon=True).start()
         except Exception as e:

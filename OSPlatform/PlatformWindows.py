@@ -67,8 +67,21 @@ class PlatformWindows(PlatformBase):
 
     def set_password(self, username: str, password: str):
         """设置Windows用户密码"""
+        # Windows没有root用户，映射为Administrator
+        if username == "root":
+            username = "Administrator"
+
         logger.info("[Windows密码] 设置{}密码", username)
-        result = self._run_cmd(["net", "user", username, password])
+
+        # 先检查用户是否存在
+        check_result = self._run_cmd(["net", "user", username], shell=True)
+        if check_result.returncode != 0:
+            logger.warning("[Windows密码] 用户{}不存在，跳过密码设置", username)
+            return
+
+        # 使用shell执行，密码用引号包裹防止特殊字符被解析
+        cmd = f'net user {username} "{password}"'
+        result = self._run_cmd(cmd, shell=True)
         if result.returncode == 0:
             logger.info("[Windows密码] {}密码设置成功", username)
         else:
