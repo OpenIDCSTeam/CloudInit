@@ -78,17 +78,18 @@ class ToDeskManager:
             return
 
         try:
-            # 使用subprocess.Popen启动，不等待进程结束
+            # 使用STARTUPINFO设置最小化启动，保留托盘图标供用户操作
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags = subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 7  # SW_SHOWMINNOACTIVE: 最小化且不激活
             subprocess.Popen(
                 [toDesk_exe],
                 cwd=self._toDesk_dir,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                creationflags=subprocess.CREATE_NO_WINDOW
-                if hasattr(subprocess, "CREATE_NO_WINDOW")
-                else 0,
+                startupinfo=startupinfo,
             )
-            logger.info("[ToDesk] ToDesk.exe已启动: {}", toDesk_exe)
+            logger.info("[ToDesk] ToDesk.exe已启动(最小化): {}", toDesk_exe)
         except Exception as e:
             logger.error("[ToDesk] 启动ToDesk.exe失败: {}", e)
 
