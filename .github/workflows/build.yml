@@ -22,27 +22,73 @@ jobs:
         include:
           - os: ubuntu-latest
             name: linux
+            arch: x64
             python-version: '3.11'
-            artifact-name: cloudinit-linux
+            artifact-name: cloudinit-linux-x64
+            ext: ''
+
+          - os: ubuntu-latest
+            name: linux
+            arch: x86
+            python-version: '3.11'
+            artifact-name: cloudinit-linux-x86
+            ext: ''
+
+          - os: ubuntu-24.04-arm
+            name: linux
+            arch: a64
+            python-version: '3.11'
+            artifact-name: cloudinit-linux-a64
             ext: ''
 
           - os: macos-latest
             name: macos
+            arch: a64
             python-version: '3.11'
-            artifact-name: cloudinit-macos
+            artifact-name: cloudinit-macos-a64
+            ext: ''
+
+          - os: macos-13
+            name: macos
+            arch: x64
+            python-version: '3.11'
+            artifact-name: cloudinit-macos-x64
             ext: ''
 
           - os: windows-latest
             name: win10
+            arch: x64
             python-version: '3.13'
-            artifact-name: cloudinit-win10
+            artifact-name: cloudinit-win10-x64
             ext: '.exe'
 
-          # - os: windows-2019
-          #   name: win7
-          #   python-version: '3.8'
-          #   artifact-name: cloudinit-win7
-          #   ext: '.exe'
+          - os: windows-latest
+            name: win10
+            arch: x86
+            python-version: '3.13'
+            artifact-name: cloudinit-win10-x86
+            ext: '.exe'
+
+          - os: windows-11-arm
+            name: win10
+            arch: a64
+            python-version: '3.13'
+            artifact-name: cloudinit-win10-a64
+            ext: '.exe'
+
+          - os: windows-2019
+            name: win78
+            arch: x64
+            python-version: '3.8'
+            artifact-name: cloudinit-win78-x64
+            ext: '.exe'
+
+          - os: windows-2019
+            name: win78
+            arch: x86
+            python-version: '3.8'
+            artifact-name: cloudinit-win78-x86
+            ext: '.exe'
 
     runs-on: ${{ matrix.os }}
 
@@ -54,13 +100,15 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
+        architecture: ${{ matrix.arch == 'x86' && 'x86' || 'x64' }}
 
     - name: Cache pip packages
       uses: actions/cache@v4
       with:
         path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('requirements.txt') }}
+        key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ matrix.arch }}-${{ hashFiles('requirements.txt') }}
         restore-keys: |
+          ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ matrix.arch }}-
           ${{ runner.os }}-pip-${{ matrix.python-version }}-
           ${{ runner.os }}-pip-
 
@@ -120,17 +168,42 @@ jobs:
 
     - name: Rename artifacts for release
       run: |
-        mv artifacts/cloudinit-linux/CloudInit artifacts/cloudinit-linux/CloudInit-linux
-        mv artifacts/cloudinit-macos/CloudInit artifacts/cloudinit-macos/CloudInit-macos
+        # linux-x64
+        mv artifacts/cloudinit-linux-x64/CloudInit artifacts/cloudinit-linux-x64/CloudInit-linux-x64
+        # linux-x86: 仅带架构名
+        mv artifacts/cloudinit-linux-x86/CloudInit artifacts/cloudinit-linux-x86/CloudInit-linux-x86
+        # linux-a64: 仅带架构名
+        mv artifacts/cloudinit-linux-a64/CloudInit artifacts/cloudinit-linux-a64/CloudInit-linux-a64
+        # macos-a64: 仅带架构名
+        mv artifacts/cloudinit-macos-a64/CloudInit artifacts/cloudinit-macos-a64/CloudInit-macos-a64
+        # macos-x64
+        mv artifacts/cloudinit-macos-x64/CloudInit artifacts/cloudinit-macos-x64/CloudInit-macos-x64
+        # win10-x64
+        mv artifacts/cloudinit-win10-x64/CloudInit.exe artifacts/cloudinit-win10-x64/CloudInit-win10-x64.exe
+        # win10-x86: 仅带架构名
+        mv artifacts/cloudinit-win10-x86/CloudInit.exe artifacts/cloudinit-win10-x86/CloudInit-win10-x86.exe
+        # win10-a64: 仅带架构名
+        mv artifacts/cloudinit-win10-a64/CloudInit.exe artifacts/cloudinit-win10-a64/CloudInit-win10-a64.exe
+        # win78-x64
+        mv artifacts/cloudinit-win78-x64/CloudInit.exe artifacts/cloudinit-win78-x64/CloudInit-win78-x64.exe
+        # win78-x86: 仅带架构名
+        mv artifacts/cloudinit-win78-x86/CloudInit.exe artifacts/cloudinit-win78-x86/CloudInit-win78-x86.exe
 
     - name: Create/Update Beta Release
       uses: softprops/action-gh-release@v1
       with:
         fail_on_unmatched_files: false
         files: |
-          artifacts/cloudinit-linux/CloudInit-linux
-          artifacts/cloudinit-macos/CloudInit-macos
-          artifacts/cloudinit-win10/CloudInit.exe
+          artifacts/cloudinit-win10-x64/CloudInit-win10-x64.exe
+          artifacts/cloudinit-win10-x86/CloudInit-win10-x86.exe
+          artifacts/cloudinit-win10-a64/CloudInit-win10-a64.exe
+          artifacts/cloudinit-win78-x64/CloudInit-win78-x64.exe
+          artifacts/cloudinit-win78-x86/CloudInit-win78-x86.exe
+          artifacts/cloudinit-linux-x64/CloudInit-linux-x64
+          artifacts/cloudinit-linux-x86/CloudInit-linux-x86
+          artifacts/cloudinit-linux-a64/CloudInit-linux-a64
+          artifacts/cloudinit-macos-x64/CloudInit-macos-x64
+          artifacts/cloudinit-macos-a64/CloudInit-macos-a64
         tag_name: beta
         name: Beta Build (Latest)
         body: |
@@ -173,17 +246,42 @@ jobs:
 
     - name: Rename artifacts for release
       run: |
-        mv artifacts/cloudinit-linux/CloudInit artifacts/cloudinit-linux/CloudInit-linux
-        mv artifacts/cloudinit-macos/CloudInit artifacts/cloudinit-macos/CloudInit-macos
+        # linux-x64
+        mv artifacts/cloudinit-linux-x64/CloudInit artifacts/cloudinit-linux-x64/CloudInit-linux-x64
+        # linux-x86: 仅带架构名
+        mv artifacts/cloudinit-linux-x86/CloudInit artifacts/cloudinit-linux-x86/CloudInit-linux-x86
+        # linux-a64: 仅带架构名
+        mv artifacts/cloudinit-linux-a64/CloudInit artifacts/cloudinit-linux-a64/CloudInit-linux-a64
+        # macos-a64: 仅带架构名
+        mv artifacts/cloudinit-macos-a64/CloudInit artifacts/cloudinit-macos-a64/CloudInit-macos-a64
+        # macos-x64
+        mv artifacts/cloudinit-macos-x64/CloudInit artifacts/cloudinit-macos-x64/CloudInit-macos-x64
+        # win10-x64
+        mv artifacts/cloudinit-win10-x64/CloudInit.exe artifacts/cloudinit-win10-x64/CloudInit-win10-x64.exe
+        # win10-x86: 仅带架构名
+        mv artifacts/cloudinit-win10-x86/CloudInit.exe artifacts/cloudinit-win10-x86/CloudInit-win10-x86.exe
+        # win10-a64: 仅带架构名
+        mv artifacts/cloudinit-win10-a64/CloudInit.exe artifacts/cloudinit-win10-a64/CloudInit-win10-a64.exe
+        # win78-x64
+        mv artifacts/cloudinit-win78-x64/CloudInit.exe artifacts/cloudinit-win78-x64/CloudInit-win78-x64.exe
+        # win78-x86: 仅带架构名
+        mv artifacts/cloudinit-win78-x86/CloudInit.exe artifacts/cloudinit-win78-x86/CloudInit-win78-x86.exe
 
     - name: Create Stable Release
       uses: softprops/action-gh-release@v1
       with:
         fail_on_unmatched_files: false
         files: |
-          artifacts/cloudinit-linux/CloudInit-linux
-          artifacts/cloudinit-macos/CloudInit-macos
-          artifacts/cloudinit-win10/CloudInit.exe
+          artifacts/cloudinit-win10-x64/CloudInit-win10-x64.exe
+          artifacts/cloudinit-win10-x86/CloudInit-win10-x86.exe
+          artifacts/cloudinit-win10-a64/CloudInit-win10-a64.exe
+          artifacts/cloudinit-win78-x64/CloudInit-win78-x64.exe
+          artifacts/cloudinit-win78-x86/CloudInit-win78-x86.exe
+          artifacts/cloudinit-linux-x64/CloudInit-linux-x64
+          artifacts/cloudinit-linux-x86/CloudInit-linux-x86
+          artifacts/cloudinit-linux-a64/CloudInit-linux-a64
+          artifacts/cloudinit-macos-x64/CloudInit-macos-x64
+          artifacts/cloudinit-macos-a64/CloudInit-macos-a64
         tag_name: ${{ github.event.inputs.version }}
         name: Release ${{ github.event.inputs.version }}
         draft: false

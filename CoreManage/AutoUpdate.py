@@ -349,18 +349,113 @@ class AutoUpdate:
         return False
 
     @staticmethod
+    def _is_legacy_windows() -> bool:
+        """判断当前Windows是否为旧版本（Win7/Win8/Win8.1）"""
+        if platform.system().lower() != "windows":
+            return False
+        try:
+            # Windows版本号: Win7=6.1, Win8=6.2, Win8.1=6.3, Win10+=10.0
+            ver = platform.version()  # 如 "6.1.7601" 或 "10.0.19041"
+            major = int(ver.split(".")[0])
+            return major < 10
+        except (ValueError, IndexError):
+            return False
+
+    @staticmethod
+    def _get_arch_tag() -> str:
+        """
+        获取当前机器架构标识。
+        返回 "x64"、"x86" 或 "a64"（ARM64）。
+        """
+        machine = platform.machine().lower()
+        if machine in ("aarch64", "arm64"):
+            return "a64"
+        if machine in ("i386", "i686", "x86"):
+            return "x86"
+        return "x64"
+
+    @staticmethod
     def _find_platform_asset(assets: list, system: str) -> dict | None:
-        """根据当前平台关键词匹配对应的Release资产"""
-        keywords_map = {
-            "linux": ("linux", "serverinit"),
-            "darwin": ("darwin", "macos", "osx"),
-            "windows": ("windows", "cloudinit", "win"),
-        }
-        keywords = keywords_map.get(system, ())
-        for asset in assets:
-            name = asset.get("name", "").lower()
-            if any(kw in name for kw in keywords):
-                return asset
+        """
+        根据当前平台和架构匹配对应的Release资产。
+
+        命名规则: CloudInit-<系统>-<架构>.exe
+        匹配优先级:
+          1. 精确匹配: os_tag + arch（如 CloudInit-linux-x64）
+          2. 默认别名: os_tag 且不含任何架构后缀（如 CloudInit-linux，默认为x64）
+          3. 宽松匹配: 只要包含 os_tag 的任意资产
+        Windows额外区分Win7/8和Win10/11。
+        """
+        arch = AutoUpdate._get_arch_tag()
+        # 所有已知架构标识，用于判断资产是否带架构后缀
+        all_arch_tags = ("x64", "x86", "a64")
+
+        if system == "windows":
+            is_legacy = AutoUpdate._is_legacy_windows()
+            os_tag = "win78" if is_legacy else "win10"
+
+            # 优先匹配: CloudInit-win10-x64 或 CloudInit-win78-a64 等
+            for asset in assets:
+                name = asset.get("name", "").lower()
+                if os_tag in name and arch in name:
+                    return asset
+
+            # 回退: CloudInit-win10 或 CloudInit-win78（不带任何架构后缀，默认x64）
+            # 仅当当前架构为x64时才使用默认别名（因为默认就是x64）
+            if arch == "x64":
+                for asset in assets:
+                    name = asset.get("name", "").lower()
+                    if os_tag in name and not any(a in name for a in all_arch_tags):
+                        return asset
+
+            # 再回退: 只要包含对应os_tag的任意资产（优先选不带架构的）
+            for asset in assets:
+                name = asset.get("name", "").lower()
+                if os_tag in name and not any(a in name for a in all_arch_tags):
+                    return asset
+            for asset in assets:
+                name = asset.get("name", "").lower()
+                if os_tag in name:
+                    return asset
+
+            # Win7/8找不到时尝试通用Windows包
+            if is_legacy:
+                logger.warning("[自动更新] 未找到Win7/8专用更新包(win78)，尝试使用通用Windows包")
+                for asset in assets:
+                    name = asset.get("name", "").lower()
+                    if ("win10" in name or "windows" in name) and "win78" not in name:
+                        return asset
+        else:
+            os_tag_map = {
+                "linux": "linux",
+                "darwin": "macos",
+            }
+            os_tag = os_tag_map.get(system, system)
+
+            # 优先匹配: CloudInit-linux-x64 或 CloudInit-macos-a64 等
+            for asset in assets:
+                name = asset.get("name", "").lower()
+                if os_tag in name and arch in name:
+                    return asset
+
+            # 回退: CloudInit-linux 或 CloudInit-macos（不带任何架构后缀，默认x64）
+            # 仅当当前架构为x64时才使用默认别名（因为默认就是x64）
+            if arch == "x64":
+                for asset in assets:
+                    name = asset.get("name", "").lower()
+                    if os_tag in name and not any(a in name for a in all_arch_tags):
+                        return asset
+
+            # 再回退: 只要包含对应os_tag的任意资产（优先选不带架构的）
+            for asset in assets:
+                name = asset.get("name", "").lower()
+                if os_tag in name and not any(a in name for a in all_arch_tags):
+                    return asset
+            for asset in assets:
+                name = asset.get("name", "").lower()
+                if os_tag in name:
+                    return asset
+
         # 兜底：仅有一个资产时直接使用
         return assets[0] if len(assets) == 1 else None
 

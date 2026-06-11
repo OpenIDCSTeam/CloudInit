@@ -143,4 +143,4 @@ find / -maxdepth 3 -type f -name 'core' -o -name 'core.*' 2>/dev/null | xargs -r
 rm -rf /var/lib/systemd/coredump/* 2>/dev/null
 
 echo "[系统清理] 系统垃圾清理完成"
-history -c && history -w
+sync && history -c && history -w
