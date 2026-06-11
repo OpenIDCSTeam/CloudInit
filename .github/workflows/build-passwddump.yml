@@ -59,10 +59,18 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Set up Go
+    - name: Set up Go (Win10)
+      if: matrix.name == 'win10'
       uses: actions/setup-go@v5
       with:
         go-version: '1.23'
+        cache-dependency-path: PasswdDump/go.sum
+
+    - name: Set up Go (Win7 兼容)
+      if: matrix.name == 'win7'
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.20'
         cache-dependency-path: PasswdDump/go.sum
 
     - name: Build (Win10+)
@@ -74,6 +82,15 @@ jobs:
         set GOARCH=${{ matrix.goarch }}
         set CGO_ENABLED=0
         go build -trimpath -ldflags="-s -w" -o ToDeskSunDump.exe .
+
+    - name: Downgrade dependencies (Win7 兼容)
+      if: matrix.name == 'win7'
+      shell: cmd
+      working-directory: PasswdDump
+      run: |
+        go mod edit -go=1.20
+        go get golang.org/x/sys@v0.15.0
+        go mod tidy
 
     - name: Build (Win7 兼容)
       if: matrix.name == 'win7'

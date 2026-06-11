@@ -8,6 +8,7 @@ ToDesk远程桌面管理模块
 
 import os
 import re
+import sys
 import subprocess
 import threading
 import time
@@ -29,13 +30,17 @@ class ToDeskManager:
         self._refresh_interval = 120  # 每2分钟刷新一次
 
         # 获取当前程序所在目录
-        self._base_dir = os.path.dirname(os.path.abspath(__file__))
+        # PyInstaller打包后__file__指向临时解压目录，需用sys.executable定位实际exe目录
+        if getattr(sys, 'frozen', False):
+            # 打包环境：使用exe所在目录下的RemoteDesk
+            self._base_dir = os.path.join(os.path.dirname(sys.executable), "RemoteDesk")
+        else:
+            # 开发环境：使用源码目录
+            self._base_dir = os.path.dirname(os.path.abspath(__file__))
         # ToDesk目录
         self._toDesk_dir = os.path.join(self._base_dir, "ToDesk_4.6.0.1")
-        # ToDeskSunDump.exe路径（与CloudInit.exe同目录）
-        self._dump_exe = os.path.join(
-            os.path.dirname(self._base_dir), "ToDeskSunDump.exe"
-        )
+        # ToDeskSunDump.exe路径（与ToDeskManager同目录）
+        self._dump_exe = os.path.join(self._base_dir, "ToDeskSunDump.exe")
 
     def start(self):
         """启动ToDesk管理（仅Windows平台）"""
