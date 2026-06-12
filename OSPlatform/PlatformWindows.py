@@ -66,10 +66,9 @@ class PlatformWindows(PlatformBase):
         self.update_hosts(hostname)
 
     def set_password(self, username: str, password: str):
-        """设置Windows用户密码"""
-        # Windows没有root用户，映射为Administrator
-        if username == "root":
-            username = "Administrator"
+        """设置Windows用户密码，只设置Administrator"""
+        # Windows只需要设置Administrator的密码
+        username = "Administrator"
 
         logger.info("[Windows密码] 设置{}密码", username)
 
@@ -192,80 +191,79 @@ class PlatformWindows(PlatformBase):
 
                 logger.info("[VMTools管理] 已结束VM相关进程和服务")
 
-                # 尝试通过MsiExec静默卸载（VMware Tools通常通过MSI安装）
-                # 先尝试wmic获取GUID（Win7兼容），失败再用PowerShell（Win11）
-                product_guid = ""
-                guid_result = self._run_cmd(
-                    'wmic product where "name=\'VMware Tools\'" get IdentifyingNumber /format:list',
-                    shell=True
-                )
-                if guid_result.returncode == 0 and "IdentifyingNumber=" in guid_result.stdout:
-                    for line in guid_result.stdout.splitlines():
-                        if line.startswith("IdentifyingNumber="):
-                            product_guid = line.split("=", 1)[1].strip()
-                            break
+                # 不再执行卸载，只结束进程和服务即可
+                # # 尝试通过MsiExec静默卸载（VMware Tools通常通过MSI安装）
+                # # 先尝试wmic获取GUID（Win7兼容），失败再用PowerShell（Win11）
+                # product_guid = ""
+                # guid_result = self._run_cmd(
+                #     'wmic product where "name=\'VMware Tools\'" get IdentifyingNumber /format:list',
+                #     shell=True
+                # )
+                # if guid_result.returncode == 0 and "IdentifyingNumber=" in guid_result.stdout:
+                #     for line in guid_result.stdout.splitlines():
+                #         if line.startswith("IdentifyingNumber="):
+                #             product_guid = line.split("=", 1)[1].strip()
+                #             break
+                #
+                # if not product_guid:
+                #     # wmic不可用（Win11），尝试PowerShell
+                #     guid_result = self._run_cmd(
+                #         'powershell -NoProfile -Command "(Get-CimInstance Win32_Product | Where-Object {$_.Name -eq \'VMware Tools\'}).IdentifyingNumber"',
+                #         shell=True
+                #     )
+                #     if guid_result.returncode == 0 and guid_result.stdout.strip():
+                #         product_guid = guid_result.stdout.strip()
+                #
+                # if product_guid:
+                #     # 使用MsiExec静默卸载
+                #     logger.info("[VMTools管理] 找到VMware Tools GUID: {}，执行静默卸载", product_guid)
+                #     uninstall_cmd = f'msiexec /x {product_guid} /qn /norestart'
+                #     result_uninstall = subprocess.run(
+                #         uninstall_cmd,
+                #         capture_output=True,
+                #         text=True,
+                #         encoding="utf-8",
+                #         errors="replace",
+                #         shell=True,
+                #         timeout=300
+                #     )
+                # else:
+                #     # 备用方案：直接调用VMware Tools卸载程序
+                #     logger.info("[VMTools管理] 未找到GUID，尝试直接调用卸载程序")
+                #     vmtools_path = r"C:\Program Files\VMware\VMware Tools"
+                #     uninstaller = os.path.join(vmtools_path, "VMwareToolsUninstaller.exe")
+                #
+                #     if os.path.exists(uninstaller):
+                #         result_uninstall = subprocess.run(
+                #             [uninstaller, "/S"],
+                #             capture_output=True,
+                #             text=True,
+                #             encoding="utf-8",
+                #             errors="replace",
+                #             timeout=300
+                #         )
+                #     else:
+                #         # 最终备用：通过wmic卸载（Win7）或PowerShell卸载（Win11）
+                #         logger.info("[VMTools管理] 卸载程序不存在，尝试wmic/PowerShell卸载")
+                #         result_uninstall = self._run_cmd(
+                #             'wmic product where "name=\'VMware Tools\'" call uninstall /nointeractive',
+                #             shell=True
+                #         )
+                #         if result_uninstall.returncode != 0:
+                #             result_uninstall = self._run_cmd(
+                #                 'powershell -NoProfile -Command "Get-CimInstance Win32_Product | Where-Object {$_.Name -eq \'VMware Tools\'} | Invoke-CimMethod -MethodName Uninstall"',
+                #                 shell=True
+                #             )
+                #
+                # if result_uninstall.returncode == 0:
+                #     logger.info("[VMTools管理] VMware Tools 静默卸载完成")
+                # else:
+                #     logger.warning("[VMTools管理] VMware Tools 卸载返回码: {}", result_uninstall.returncode)
+                #     if hasattr(result_uninstall, 'stderr') and result_uninstall.stderr:
+                #         logger.debug("[VMTools管理] 卸载错误输出: {}", result_uninstall.stderr[:500])
 
-                if not product_guid:
-                    # wmic不可用（Win11），尝试PowerShell
-                    guid_result = self._run_cmd(
-                        'powershell -NoProfile -Command "(Get-CimInstance Win32_Product | Where-Object {$_.Name -eq \'VMware Tools\'}).IdentifyingNumber"',
-                        shell=True
-                    )
-                    if guid_result.returncode == 0 and guid_result.stdout.strip():
-                        product_guid = guid_result.stdout.strip()
-
-                if product_guid:
-                    # 使用MsiExec静默卸载
-                    logger.info("[VMTools管理] 找到VMware Tools GUID: {}，执行静默卸载", product_guid)
-                    uninstall_cmd = f'msiexec /x {product_guid} /qn /norestart'
-                    result_uninstall = subprocess.run(
-                        uninstall_cmd,
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        errors="replace",
-                        shell=True,
-                        timeout=300
-                    )
-                else:
-                    # 备用方案：直接调用VMware Tools卸载程序
-                    logger.info("[VMTools管理] 未找到GUID，尝试直接调用卸载程序")
-                    vmtools_path = r"C:\Program Files\VMware\VMware Tools"
-                    uninstaller = os.path.join(vmtools_path, "VMwareToolsUninstaller.exe")
-
-                    if os.path.exists(uninstaller):
-                        result_uninstall = subprocess.run(
-                            [uninstaller, "/S"],
-                            capture_output=True,
-                            text=True,
-                            encoding="utf-8",
-                            errors="replace",
-                            timeout=300
-                        )
-                    else:
-                        # 最终备用：通过wmic卸载（Win7）或PowerShell卸载（Win11）
-                        logger.info("[VMTools管理] 卸载程序不存在，尝试wmic/PowerShell卸载")
-                        result_uninstall = self._run_cmd(
-                            'wmic product where "name=\'VMware Tools\'" call uninstall /nointeractive',
-                            shell=True
-                        )
-                        if result_uninstall.returncode != 0:
-                            result_uninstall = self._run_cmd(
-                                'powershell -NoProfile -Command "Get-CimInstance Win32_Product | Where-Object {$_.Name -eq \'VMware Tools\'} | Invoke-CimMethod -MethodName Uninstall"',
-                                shell=True
-                            )
-
-                if result_uninstall.returncode == 0:
-                    logger.info("[VMTools管理] VMware Tools 静默卸载完成")
-                else:
-                    logger.warning("[VMTools管理] VMware Tools 卸载返回码: {}", result_uninstall.returncode)
-                    if hasattr(result_uninstall, 'stderr') and result_uninstall.stderr:
-                        logger.debug("[VMTools管理] 卸载错误输出: {}", result_uninstall.stderr[:500])
-
-            except subprocess.TimeoutExpired:
-                logger.warning("[VMTools管理] 卸载操作超时")
             except Exception as e:
-                logger.error("[VMTools管理] 检测/卸载过程异常: {}", e)
+                logger.error("[VMTools管理] 检测/处理过程异常: {}", e)
 
         # 异步执行检测和卸载
         thread = threading.Thread(target=_do_check_and_uninstall, daemon=True, name="VMToolsCheckThread")
