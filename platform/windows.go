@@ -4,9 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
+
+	"golang.org/x/text/encoding/simplifiedchinese"
 
 	"CloudInit/apppath"
 	"CloudInit/logger"
@@ -208,21 +213,17 @@ func (p *windowsPlatform) ActivateWindows() {
 }
 
 func (p *windowsPlatform) doActivateWindows() {
-	// 获取MASAIO.cmd脚本路径（与CloudInit.exe同目录）
-	masaioPath := apppath.BaseDir() + string(os.PathSeparator) + "MASAIO.cmd"
-	if _, err := os.Stat(masaioPath); err != nil {
-		logger.Warnf("[Windows激活] 激活脚本不存在: %s", masaioPath)
+	// 激活脚本默认位于 tool 目录，兼容老版本放在程序根目录的情况
+	masaioPath := locateMASAIO()
+	if masaioPath == "" {
+		logger.Warnf("[Windows激活] 激活脚本不存在（已检查 tool 目录与程序目录）")
 		return
 	}
 
 	// 检查是否已激活
-	result := runShell(`cscript //nologo C:\Windows\System32\slmgr.vbs /xpr`)
-	if result.Returncode == 0 && result.Err == nil {
-		if strings.Contains(result.Stdout, "永久激活") ||
-			strings.Contains(strings.ToLower(result.Stdout), "permanently activated") {
-			logger.Infof("[Windows激活] 系统已永久激活，跳过")
-			return
-		}
+	if p.windowsActivated() {
+		logger.Infof("[Windows激活] 系统已永久激活，跳过")
+		return
 	}
 
 	// 根据Windows版本选择激活方式
@@ -244,25 +245,136 @@ func (p *windowsPlatform) doActivateWindows() {
 		methodName = "HWID"
 	}
 
-	logger.Infof("[Windows激活] 使用 %s 方式激活 (版本: %s)", methodName, winVer)
+	masVer := readMASVersion(masaioPath)
+	logger.Infof("[Windows激活] 系统版本: %s, 脚本版本: %s, 优先方式: %s",
+		winVer, masVer, methodName)
 
-	// 执行激活脚本
+	if p.runActivation(masaioPath, activateParam, methodName, masVer) {
+		logger.Infof("[Windows激活] 系统激活成功")
+		return
+	}
+
+	// HWID 依赖联网，失败时回退 TSforge（可离线激活）
+	if methodName == "HWID" {
+		logger.Warnf("[Windows激活] HWID 方式未生效，改用 TSforge 方式重试")
+		if p.runActivation(masaioPath, "/Z-Windows /S", "TSforge", masVer) {
+			logger.Infof("[Windows激活] 系统激活成功")
+			return
+		}
+	}
+
+	logger.Warnf("[Windows激活] 系统仍未激活（脚本版本: %s），请检查网络或更新 tool/MASAIO.cmd", masVer)
+}
+
+// runActivation 执行一次激活并轮询确认结果
+func (p *windowsPlatform) runActivation(masaioPath, activateParam, methodName, masVer string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
 	cmdText := fmt.Sprintf(`cmd.exe /c "%s" %s`, masaioPath, activateParam)
-	result, err := runShellContext(ctx, cmdText)
+	stdout, stderr, code, err := runShellContextRaw(ctx, cmdText)
+	output := strings.TrimSpace(decodeConsoleOutput(stdout) + "\n" + decodeConsoleOutput(stderr))
+
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			logger.Warnf("[Windows激活] 激活脚本执行超时")
-			return
+			logger.Warnf("[Windows激活] %s 激活脚本执行超时", methodName)
+			return false
 		}
-		logger.Warnf("[Windows激活] %s 激活返回码: %d", methodName, result.Returncode)
-		if result.Stderr != "" {
-			logger.Debugf("[Windows激活] 错误输出: %s", truncateText(result.Stderr, 500))
-		}
-		return
+		logger.Warnf("[Windows激活] %s 激活脚本返回码: %d", methodName, code)
+	} else {
+		logger.Infof("[Windows激活] %s 激活脚本执行完成", methodName)
 	}
 
-	logger.Infof("[Windows激活] %s 激活执行完成", methodName)
+	// 脚本自身提示版本过低时给出明确告警
+	if strings.Contains(strings.ToLower(output), "outdated") {
+		logger.Warnf("[Windows激活] 激活脚本版本偏低（当前: %s），建议更新 tool/MASAIO.cmd", masVer)
+	}
+
+	// 脚本在部分场景会重启为独立的 x64 进程，这里轮询复查实际激活结果
+	if p.waitActivated(120 * time.Second) {
+		return true
+	}
+
+	logger.Warnf("[Windows激活] %s 未生效，脚本输出: %s", methodName, tailText(output, 800))
+	return false
+}
+
+// locateMASAIO 查找激活脚本：优先 tool 目录，其次程序根目录
+func locateMASAIO() string {
+	candidates := []string{
+		filepath.Join(apppath.ToolDir(), "MASAIO.cmd"),
+		filepath.Join(apppath.BaseDir(), "MASAIO.cmd"),
+	}
+	for _, path := range candidates {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return ""
+}
+
+var masVersionRe = regexp.MustCompile(`(?i)set\s+masver=([0-9][0-9.]*)`)
+
+// readMASVersion 读取激活脚本内置版本号（脚本开头的 set masver=x.y）
+func readMASVersion(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "unknown"
+	}
+	if len(data) > 8192 {
+		data = data[:8192]
+	}
+	if match := masVersionRe.FindSubmatch(data); match != nil {
+		return string(match[1])
+	}
+	return "unknown"
+}
+
+// windowsActivated 查询系统是否已永久激活（兼容中文/英文系统）
+func (p *windowsPlatform) windowsActivated() bool {
+	stdout, stderr, code, err := runCmdRaw("cscript", "//nologo", `C:\Windows\System32\slmgr.vbs`, "/xpr")
+	if err != nil {
+		logger.Debugf("[Windows激活] 激活状态查询失败: %v", err)
+		return false
+	}
+	if code != 0 {
+		logger.Debugf("[Windows激活] 激活状态查询返回码: %d", code)
+		return false
+	}
+
+	text := decodeConsoleOutput(stdout) + decodeConsoleOutput(stderr)
+	lower := strings.ToLower(text)
+
+	activated := strings.Contains(text, "永久激活") ||
+		strings.Contains(lower, "permanently activated")
+	if !activated {
+		logger.Debugf("[Windows激活] 激活状态: %s", strings.TrimSpace(text))
+	}
+	return activated
+}
+
+// waitActivated 轮询等待激活完成
+func (p *windowsPlatform) waitActivated(timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if p.windowsActivated() {
+			return true
+		}
+		time.Sleep(5 * time.Second)
+	}
+	return false
+}
+
+// decodeConsoleOutput 解码控制台输出：优先 UTF-8，失败则按 GBK
+func decodeConsoleOutput(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	if utf8.Valid(raw) {
+		return string(raw)
+	}
+	if decoded, err := simplifiedchinese.GBK.NewDecoder().Bytes(raw); err == nil {
+		return string(decoded)
+	}
+	return strings.ToValidUTF8(string(raw), "\uFFFD")
 }

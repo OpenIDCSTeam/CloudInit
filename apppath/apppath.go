@@ -34,6 +34,18 @@ func ExePath() string {
 	return exePath
 }
 
+// ToolDir 返回工具目录（程序目录下的 tool 文件夹）
+func ToolDir() string {
+	return filepath.Join(BaseDir(), "tool")
+}
+
+// EnsureToolDir 创建并返回工具目录
+func EnsureToolDir() string {
+	dir := ToolDir()
+	_ = os.MkdirAll(dir, 0o755)
+	return dir
+}
+
 func initPaths() {
 	once.Do(func() {
 		exe, err := os.Executable()

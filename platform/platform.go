@@ -157,23 +157,51 @@ func runShell(command string) cmdResult {
 
 // runShellContext 通过系统 shell 执行命令，支持超时上下文
 func runShellContext(ctx context.Context, command string) (cmdResult, error) {
-	command_ := newShellCmdContext(ctx, command)
+	return runRawResult(newShellCmdContext(ctx, command))
+}
 
-	var stdout, stderr bytes.Buffer
-	command_.Stdout = &stdout
-	command_.Stderr = &stderr
+// runShellContextRaw 通过系统 shell 执行命令，返回未经解码的原始输出
+// 用于需要按本地代码页（如 GBK）解码的场景
+func runShellContextRaw(ctx context.Context, command string) (stdout, stderr []byte, code int, err error) {
+	return runRaw(newShellCmdContext(ctx, command))
+}
 
-	res := cmdResult{}
-	err := command_.Run()
-	res.Stdout = sanitizeText(stdout.String())
-	res.Stderr = sanitizeText(stderr.String())
+// runCmdRaw 执行命令，返回未经解码的原始输出
+func runCmdRaw(name string, args ...string) (stdout, stderr []byte, code int, err error) {
+	return runRaw(exec.Command(name, args...))
+}
 
+// runRaw 执行命令并返回原始输出
+func runRaw(command *exec.Cmd) (stdout, stderr []byte, code int, err error) {
+	var outBuf, errBuf bytes.Buffer
+	command.Stdout = &outBuf
+	command.Stderr = &errBuf
+
+	runErr := command.Run()
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			code = exitErr.ExitCode()
+		} else {
+			code = -1
+		}
+	}
+
+	return outBuf.Bytes(), errBuf.Bytes(), code, runErr
+}
+
+// runRawResult 执行命令并转换为 cmdResult
+func runRawResult(command *exec.Cmd) (cmdResult, error) {
+	stdout, stderr, code, err := runRaw(command)
+
+	res := cmdResult{
+		Stdout:     sanitizeText(string(stdout)),
+		Stderr:     sanitizeText(string(stderr)),
+		Returncode: code,
+	}
 	if err != nil {
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			res.Returncode = exitErr.ExitCode()
-		} else {
-			res.Returncode = -1
+		if !errors.As(err, &exitErr) {
 			res.Err = err
 		}
 	}
@@ -228,4 +256,13 @@ func truncateText(s string, n int) string {
 		return s
 	}
 	return string(runes[:n])
+}
+
+// tailText 取文本末尾 n 个字符（对应 Python 的 s[-n:]）
+func tailText(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[len(runes)-n:])
 }

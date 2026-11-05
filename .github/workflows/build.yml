@@ -63,9 +63,54 @@ jobs:
         path: dist-artifact/
         retention-days: 30
 
+  # 打包工具（MASAIO.cmd / ToDeskSunDump.exe），版本取自 tool/tools.json
+  tools:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Package tools
+      run: |
+        mkdir -p dist-tools
+        python3 - <<'PY'
+        import hashlib
+        import json
+        import os
+        import shutil
+
+        spec = json.load(open("tool/tools.json", encoding="utf-8"))
+        entries = []
+        for tool in spec.get("tools", []):
+            name = tool["name"]
+            version = tool["version"]
+            source = os.path.join("tool", tool.get("file", name))
+            base, ext = os.path.splitext(name)
+            asset = f"CloudInit-tool-{base}-{version}{ext}"
+            shutil.copyfile(source, os.path.join("dist-tools", asset))
+            digest = hashlib.sha256(open(source, "rb").read()).hexdigest()
+            entries.append({
+                "name": name,
+                "version": version,
+                "asset": asset,
+                "sha256": digest,
+            })
+            print(f"{name} {version} -> {asset}")
+
+        with open("dist-tools/CloudInit-tools.json", "w", encoding="utf-8") as handle:
+            json.dump({"tools": entries}, handle, ensure_ascii=False, indent=2)
+        PY
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: CloudInit-tools
+        path: dist-tools/
+        retention-days: 30
+
   # Push 自动发布到 beta release
   release-beta:
-    needs: build
+    needs: [ build, tools ]
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
 
@@ -103,6 +148,9 @@ jobs:
           artifacts/CloudInit-linux-a64
           artifacts/CloudInit-macos-x64
           artifacts/CloudInit-macos-a64
+          artifacts/CloudInit-tools.json
+          artifacts/CloudInit-tool-*.exe
+          artifacts/CloudInit-tool-*.cmd
         tag_name: beta
         name: Beta Build (Latest)
         body: |
@@ -120,7 +168,7 @@ jobs:
 
   # 手动触发发布正式版本
   release-stable:
-    needs: build
+    needs: [ build, tools ]
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch'
 
@@ -158,9 +206,40 @@ jobs:
           artifacts/CloudInit-linux-a64
           artifacts/CloudInit-macos-x64
           artifacts/CloudInit-macos-a64
+          artifacts/CloudInit-tools.json
+          artifacts/CloudInit-tool-*.exe
+          artifacts/CloudInit-tool-*.cmd
         tag_name: ${{ github.event.inputs.version }}
         name: Release ${{ github.event.inputs.version }}
         draft: false
         prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 正式版本同步到 EdgeOne 镜像站（eo-idc.pika.net.cn）
+  sync-edgeone:
+    needs: [ build, tools ]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+        merge-multiple: true
+
+    - name: Install EdgeOne CLI
+      run: npm install -g edgeone
+
+    - name: Prepare and deploy EdgeOne site
+      env:
+        EDGEONE_API_TOKEN: ${{ secrets.EDGEONE_API_TOKEN }}
+        EDGEONE_PROJECT_NAME: ${{ vars.EDGEONE_PROJECT_NAME || 'cloudinit' }}
+        EDGEONE_PREFIX: ${{ vars.EDGEONE_PREFIX || 'cloudinit' }}
+      run: |
+        chmod +x scripts/sync_edgeone.sh
+        ./scripts/sync_edgeone.sh artifacts "${{ github.event.inputs.version }}" eo-site

@@ -150,6 +150,9 @@ func (a *AutoUpdate) checkAndUpdate() {
 		return
 	}
 
+	// 工具更新与主程序版本无关，先按工具自身版本同步
+	a.syncTools(latestInfo)
+
 	// 版本相同则跳过
 	if latestVersion == currentVersion {
 		logger.Debugf("[自动更新] 当前版本(%s)已是最新", currentVersion)
@@ -255,8 +258,90 @@ func (a *AutoUpdate) saveCurrentVersion(version string) {
 	}
 }
 
-// latestRelease 从GitHub API获取最新正式Release信息，按代理列表依次尝试
+// latestRelease 获取最新正式版本信息
+// 优先使用镜像站（EdgeOne），不可用时回退 GitHub
 func (a *AutoUpdate) latestRelease() map[string]interface{} {
+	if mirror := strings.TrimSpace(config.Cfg.MirrorURL); mirror != "" {
+		if release, ok := a.mirrorRelease(mirror); ok {
+			return release
+		}
+		logger.Debugf("[自动更新] 镜像站不可用，回退 GitHub")
+	}
+	return a.githubRelease()
+}
+
+// mirrorRelease 从镜像站读取 latest.json
+func (a *AutoUpdate) mirrorRelease(mirror string) (map[string]interface{}, bool) {
+	baseURL := strings.TrimRight(mirror, "/")
+	url := baseURL + "/latest.json"
+
+	logger.Debugf("[自动更新] 尝试镜像: %s", url)
+
+	resp, err := a.api.Get(url)
+	if err != nil {
+		if isTimeoutError(err) {
+			logger.Debugf("[自动更新] 镜像请求超时")
+		} else {
+			logger.Debugf("[自动更新] 镜像请求失败: %v", err)
+		}
+		return nil, false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		logger.Debugf("[自动更新] 镜像 HTTP %d", resp.StatusCode)
+		return nil, false
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logger.Debugf("[自动更新] 镜像响应读取失败: %v", err)
+		return nil, false
+	}
+
+	var manifest struct {
+		Version string `json:"version"`
+		Assets  []struct {
+			Name   string `json:"name"`
+			File   string `json:"file"`
+			SHA256 string `json:"sha256"`
+		} `json:"assets"`
+	}
+	if err = json.Unmarshal(body, &manifest); err != nil {
+		logger.Debugf("[自动更新] 镜像清单解析失败: %v", err)
+		return nil, false
+	}
+	if manifest.Version == "" {
+		return nil, false
+	}
+
+	assets := make([]interface{}, 0, len(manifest.Assets))
+	for _, asset := range manifest.Assets {
+		if asset.Name == "" {
+			continue
+		}
+		file := asset.File
+		if file == "" {
+			file = asset.Name
+		}
+		assets = append(assets, map[string]interface{}{
+			"name":                 asset.Name,
+			"browser_download_url": baseURL + "/" + file,
+			"sha256":               asset.SHA256,
+		})
+	}
+
+	logger.Debugf("[自动更新] 镜像版本: %s（%d 个资产）", manifest.Version, len(assets))
+
+	return map[string]interface{}{
+		"tag_name":   manifest.Version,
+		"prerelease": false,
+		"assets":     assets,
+	}, true
+}
+
+// githubRelease 从GitHub API获取最新正式Release信息，按代理列表依次尝试
+func (a *AutoUpdate) githubRelease() map[string]interface{} {
 	// 将 /releases/latest 替换为 /releases 以获取完整列表用于过滤
 	releaseURL := strings.ReplaceAll(a.repoURL(), "/releases/latest", "/releases")
 
@@ -363,6 +448,15 @@ func (a *AutoUpdate) downloadAndUpdate(releaseInfo map[string]interface{}) {
 		return
 	}
 
+	// 镜像清单带 sha256 时校验完整性
+	if expected := mapString(targetAsset, "sha256"); expected != "" {
+		if !verifyFileSHA256(tempPath, expected) {
+			logger.Errorf("[自动更新] 安装包校验失败，已丢弃")
+			cleanupTemp(tempPath)
+			return
+		}
+	}
+
 	logger.Infof("[自动更新] 下载完成，执行替换...")
 
 	// 按平台执行文件替换
@@ -391,53 +485,58 @@ func (a *AutoUpdate) downloadAndUpdate(releaseInfo map[string]interface{}) {
 	restartService(system)
 }
 
-// downloadWithProxy 按代理优先级顺序尝试下载文件
+// downloadWithProxy 下载文件：GitHub 地址按代理列表依次尝试，其它地址（镜像站）直连
 func (a *AutoUpdate) downloadWithProxy(originalURL, savePath string) bool {
+	if !strings.HasPrefix(originalURL, "https://github.com/") {
+		return a.downloadOnce(originalURL, savePath)
+	}
+
 	for _, proxy := range githubProxies {
-		url := originalURL
-		if strings.HasPrefix(originalURL, "https://github.com/") {
-			url = strings.Replace(originalURL, "https://github.com/", proxy, 1)
+		url := strings.Replace(originalURL, "https://github.com/", proxy, 1)
+		if a.downloadOnce(url, savePath) {
+			logger.Infof("[自动更新] 下载成功 (via %s)", strings.TrimRight(proxy, "/"))
+			return true
 		}
-
-		logger.Infof("[自动更新] 尝试下载: %s", url)
-
-		resp, err := a.down.Get(url)
-		if err != nil {
-			logDownloadError(err)
-			cleanupTemp(savePath)
-			continue
-		}
-
-		if resp.StatusCode != 200 {
-			logger.Debugf("[自动更新] HTTP %d - 切换下一个代理", resp.StatusCode)
-			_ = resp.Body.Close()
-			continue
-		}
-
-		// 流式写入文件
-		file, err := os.Create(savePath)
-		if err != nil {
-			logger.Debugf("[自动更新] 下载异常: %v - 切换下一个代理", err)
-			_ = resp.Body.Close()
-			cleanupTemp(savePath)
-			continue
-		}
-
-		_, copyErr := io.Copy(file, resp.Body)
-		_ = file.Close()
-		_ = resp.Body.Close()
-
-		if copyErr != nil {
-			logDownloadError(copyErr)
-			cleanupTemp(savePath)
-			continue
-		}
-
-		logger.Infof("[自动更新] 下载成功 (via %s)", strings.TrimRight(proxy, "/"))
-		return true
 	}
 
 	return false
+}
+
+// downloadOnce 执行一次下载
+func (a *AutoUpdate) downloadOnce(url, savePath string) bool {
+	logger.Infof("[自动更新] 尝试下载: %s", url)
+
+	resp, err := a.down.Get(url)
+	if err != nil {
+		logDownloadError(err)
+		cleanupTemp(savePath)
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		logger.Debugf("[自动更新] HTTP %d - 切换下一个代理", resp.StatusCode)
+		return false
+	}
+
+	// 流式写入文件
+	file, err := os.Create(savePath)
+	if err != nil {
+		logger.Debugf("[自动更新] 下载异常: %v - 切换下一个代理", err)
+		cleanupTemp(savePath)
+		return false
+	}
+
+	_, copyErr := io.Copy(file, resp.Body)
+	_ = file.Close()
+
+	if copyErr != nil {
+		logDownloadError(copyErr)
+		cleanupTemp(savePath)
+		return false
+	}
+
+	return true
 }
 
 // logDownloadError 输出下载错误日志

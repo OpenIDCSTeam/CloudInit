@@ -516,6 +516,9 @@ func isConnectionError(err error) bool {
 func main() {
 	logger.Init(config.Cfg.LogLevel, config.Cfg.LogRetention)
 
+	// 老版本工具（MASAIO.cmd / ToDesk 组件）从程序根目录迁移到 tool 子目录
+	core.MigrateTools()
+
 	service := NewCloudInitService()
 	service.Start()
 }

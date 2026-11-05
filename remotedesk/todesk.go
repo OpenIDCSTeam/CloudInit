@@ -50,11 +50,11 @@ type ToDeskManager struct {
 
 // New 创建 ToDesk 管理器
 func New() *ToDeskManager {
-	baseDir := apppath.BaseDir()
+	toolDir := apppath.ToolDir()
 	return &ToDeskManager{
 		refreshInterval: 120, // 每2分钟刷新一次
-		toDeskDir:       baseDir,
-		dumpExe:         filepath.Join(baseDir, "ToDeskSunDump.exe"),
+		toDeskDir:       toolDir,
+		dumpExe:         filepath.Join(toolDir, "ToDeskSunDump.exe"),
 	}
 }
 

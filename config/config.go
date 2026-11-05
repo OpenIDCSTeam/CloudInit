@@ -30,6 +30,7 @@ type Config struct {
 	UpdateEnabled  bool   // 是否启用自动更新
 	UpdateInterval int    // 更新检查间隔（秒）
 	UpdateRepo     string // Release API 地址
+	MirrorURL      string // 镜像站地址（EdgeOne），留空则只走 GitHub
 
 	// [log] 日志相关
 	LogLevel     string // 日志级别
@@ -55,6 +56,7 @@ func newConfig() *Config {
 		UpdateEnabled:  true,
 		UpdateInterval: 86400,
 		UpdateRepo:     "https://api.github.com/repos/OpenIDCSTeam/CloudInit/releases/latest",
+		MirrorURL:      "https://eo-idc.pika.net.cn/cloudinit",
 
 		LogLevel:     "INFO",
 		LogRetention: "7 days",
@@ -120,6 +122,9 @@ func (c *Config) apply(sections map[string]map[string]string) error {
 		}
 		if v, ok2 := u["repo_url"]; ok2 {
 			c.UpdateRepo = v
+		}
+		if v, ok2 := u["mirror_url"]; ok2 {
+			c.MirrorURL = v
 		}
 	}
 
