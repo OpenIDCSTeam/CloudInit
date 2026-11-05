@@ -232,6 +232,15 @@ jobs:
         path: artifacts
         merge-multiple: true
 
+    - name: Check EdgeOne token
+      env:
+        EDGEONE_API_TOKEN: ${{ secrets.EDGEONE_API_TOKEN }}
+      run: |
+        if [ -z "$EDGEONE_API_TOKEN" ]; then
+          echo "::error::缺少 EDGEONE_API_TOKEN，无法同步到 EdgeOne"
+          exit 1
+        fi
+
     - name: Install EdgeOne CLI
       run: npm install -g edgeone
 
