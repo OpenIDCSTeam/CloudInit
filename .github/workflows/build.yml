@@ -17,130 +17,45 @@ permissions:
 
 jobs:
   build:
+    runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            name: linux
-            arch: x64
-            python-version: '3.11'
-            artifact-name: cloudinit-linux-x64
-            ext: ''
-
-          - os: ubuntu-24.04-arm
-            name: linux
-            arch: a64
-            python-version: '3.11'
-            artifact-name: cloudinit-linux-a64
-            ext: ''
-
-          - os: macos-latest
-            name: macos
-            arch: a64
-            python-version: '3.11'
-            artifact-name: cloudinit-macos-a64
-            ext: ''
-
-          - os: macos-15-intel
-            name: macos
-            arch: x64
-            python-version: '3.11'
-            artifact-name: cloudinit-macos-x64
-            ext: ''
-
-          - os: windows-latest
-            name: win10
-            arch: x64
-            python-version: '3.13'
-            artifact-name: cloudinit-win10-x64
-            ext: '.exe'
-
-          - os: windows-latest
-            name: win10
-            arch: x86
-            python-version: '3.13'
-            artifact-name: cloudinit-win10-x86
-            ext: '.exe'
-
-          - os: windows-11-arm
-            name: win10
-            arch: a64
-            python-version: '3.13'
-            artifact-name: cloudinit-win10-a64
-            ext: '.exe'
-
-          - os: windows-2022
-            name: win78
-            arch: x64
-            python-version: '3.8'
-            artifact-name: cloudinit-win78-x64
-            ext: '.exe'
-
-          - os: windows-2022
-            name: win78
-            arch: x86
-            python-version: '3.8'
-            artifact-name: cloudinit-win78-x86
-            ext: '.exe'
-
-    runs-on: ${{ matrix.os }}
+          - { goos: linux,   goarch: amd64, artifact: CloudInit-linux-x64,       go: '1.23.x' }
+          - { goos: linux,   goarch: arm64, artifact: CloudInit-linux-a64,       go: '1.23.x' }
+          - { goos: darwin,  goarch: arm64, artifact: CloudInit-macos-a64,       go: '1.23.x' }
+          - { goos: darwin,  goarch: amd64, artifact: CloudInit-macos-x64,       go: '1.23.x' }
+          - { goos: windows, goarch: amd64, artifact: CloudInit-win10-x64.exe,   go: '1.23.x' }
+          - { goos: windows, goarch: '386', artifact: CloudInit-win10-x86.exe,   go: '1.23.x' }
+          - { goos: windows, goarch: arm64, artifact: CloudInit-win10-a64.exe,   go: '1.23.x' }
+          # Win7/Win8.1 需使用 Go 1.20（Go 1.21+ 不再支持旧版 Windows）
+          - { goos: windows, goarch: amd64, artifact: CloudInit-win78-x64.exe,   go: '1.20.x' }
+          - { goos: windows, goarch: '386', artifact: CloudInit-win78-x86.exe,   go: '1.20.x' }
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Set up Python ${{ matrix.python-version }}
-      if: matrix.arch != 'a64'
-      uses: actions/setup-python@v5
+    - name: Set up Go ${{ matrix.go }}
+      uses: actions/setup-go@v5
       with:
-        python-version: ${{ matrix.python-version }}
-        architecture: ${{ matrix.arch == 'x86' && 'x86' || 'x64' }}
+        go-version: ${{ matrix.go }}
+        cache: true
 
-    - name: Set up Python ${{ matrix.python-version }} (ARM64)
-      if: matrix.arch == 'a64'
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
-
-    - name: Cache pip packages
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cache/pip
-          ~\AppData\Local\pip\Cache
-        key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ matrix.arch }}-${{ hashFiles('requirements.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ matrix.arch }}-
-          ${{ runner.os }}-pip-${{ matrix.python-version }}-
-          ${{ runner.os }}-pip-
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip setuptools wheel
-        pip install pyinstaller
-        pip install netifaces requests GPUtil psutil loguru
-
-    - name: Build with PyInstaller
-      run: |
-        pyinstaller CloudInit.spec
-
-    - name: Create artifact (Windows)
-      if: runner.os == 'Windows'
-      shell: cmd
-      run: |
-        if not exist "dist-artifact" mkdir dist-artifact
-        copy dist\CloudInit${{ matrix.ext }} dist-artifact\
-
-    - name: Create artifact (Linux/Mac)
-      if: runner.os != 'Windows'
+    - name: Build
+      env:
+        CGO_ENABLED: '0'
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
       run: |
         mkdir -p dist-artifact
-        cp dist/CloudInit${{ matrix.ext }} dist-artifact/
+        go build -trimpath -ldflags="-s -w" -o dist-artifact/${{ matrix.artifact }} .
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ matrix.artifact-name }}
+        name: ${{ matrix.artifact }}
         path: dist-artifact/
         retention-days: 30
 
@@ -158,6 +73,7 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         path: artifacts
+        merge-multiple: true
 
     - name: Display structure of downloaded files
       run: ls -R artifacts
@@ -169,50 +85,29 @@ jobs:
         git tag -fa beta -m "Beta build from ${{ github.sha }}"
         git push origin beta --force
 
-    - name: Rename artifacts for release
-      run: |
-        # linux-x64
-        mv artifacts/cloudinit-linux-x64/CloudInit artifacts/cloudinit-linux-x64/CloudInit-linux-x64
-        # linux-a64: 仅带架构名
-        mv artifacts/cloudinit-linux-a64/CloudInit artifacts/cloudinit-linux-a64/CloudInit-linux-a64
-        # macos-a64: 仅带架构名
-        mv artifacts/cloudinit-macos-a64/CloudInit artifacts/cloudinit-macos-a64/CloudInit-macos-a64
-        # macos-x64
-        mv artifacts/cloudinit-macos-x64/CloudInit artifacts/cloudinit-macos-x64/CloudInit-macos-x64
-        # win10-x64
-        mv artifacts/cloudinit-win10-x64/CloudInit.exe artifacts/cloudinit-win10-x64/CloudInit-win10-x64.exe
-        # win10-x86: 仅带架构名
-        mv artifacts/cloudinit-win10-x86/CloudInit.exe artifacts/cloudinit-win10-x86/CloudInit-win10-x86.exe
-        # win10-a64: 仅带架构名
-        mv artifacts/cloudinit-win10-a64/CloudInit.exe artifacts/cloudinit-win10-a64/CloudInit-win10-a64.exe
-        # win78-x64
-        mv artifacts/cloudinit-win78-x64/CloudInit.exe artifacts/cloudinit-win78-x64/CloudInit-win78-x64.exe
-        # win78-x86: 仅带架构名
-        mv artifacts/cloudinit-win78-x86/CloudInit.exe artifacts/cloudinit-win78-x86/CloudInit-win78-x86.exe
-
     - name: Create/Update Beta Release
       uses: softprops/action-gh-release@v1
       with:
         fail_on_unmatched_files: false
         files: |
-          artifacts/cloudinit-win10-x64/CloudInit-win10-x64.exe
-          artifacts/cloudinit-win10-x86/CloudInit-win10-x86.exe
-          artifacts/cloudinit-win10-a64/CloudInit-win10-a64.exe
-          artifacts/cloudinit-win78-x64/CloudInit-win78-x64.exe
-          artifacts/cloudinit-win78-x86/CloudInit-win78-x86.exe
-          artifacts/cloudinit-linux-x64/CloudInit-linux-x64
-          artifacts/cloudinit-linux-a64/CloudInit-linux-a64
-          artifacts/cloudinit-macos-x64/CloudInit-macos-x64
-          artifacts/cloudinit-macos-a64/CloudInit-macos-a64
+          artifacts/CloudInit-win10-x64.exe
+          artifacts/CloudInit-win10-x86.exe
+          artifacts/CloudInit-win10-a64.exe
+          artifacts/CloudInit-win78-x64.exe
+          artifacts/CloudInit-win78-x86.exe
+          artifacts/CloudInit-linux-x64
+          artifacts/CloudInit-linux-a64
+          artifacts/CloudInit-macos-x64
+          artifacts/CloudInit-macos-a64
         tag_name: beta
         name: Beta Build (Latest)
         body: |
           🚧 **自动构建的 Beta 版本**
-          
+
           提交: ${{ github.sha }}
           分支: ${{ github.ref_name }}
           时间: ${{ github.event.head_commit.timestamp }}
-          
+
           > 此版本随每次 push 自动更新，仅供测试使用。
         draft: false
         prerelease: true
@@ -233,6 +128,7 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         path: artifacts
+        merge-multiple: true
 
     - name: Display structure of downloaded files
       run: ls -R artifacts
@@ -244,41 +140,20 @@ jobs:
         git tag -fa ${{ github.event.inputs.version }} -m "Release ${{ github.event.inputs.version }}"
         git push origin ${{ github.event.inputs.version }} --force
 
-    - name: Rename artifacts for release
-      run: |
-        # linux-x64
-        mv artifacts/cloudinit-linux-x64/CloudInit artifacts/cloudinit-linux-x64/CloudInit-linux-x64
-        # linux-a64: 仅带架构名
-        mv artifacts/cloudinit-linux-a64/CloudInit artifacts/cloudinit-linux-a64/CloudInit-linux-a64
-        # macos-a64: 仅带架构名
-        mv artifacts/cloudinit-macos-a64/CloudInit artifacts/cloudinit-macos-a64/CloudInit-macos-a64
-        # macos-x64
-        mv artifacts/cloudinit-macos-x64/CloudInit artifacts/cloudinit-macos-x64/CloudInit-macos-x64
-        # win10-x64
-        mv artifacts/cloudinit-win10-x64/CloudInit.exe artifacts/cloudinit-win10-x64/CloudInit-win10-x64.exe
-        # win10-x86: 仅带架构名
-        mv artifacts/cloudinit-win10-x86/CloudInit.exe artifacts/cloudinit-win10-x86/CloudInit-win10-x86.exe
-        # win10-a64: 仅带架构名
-        mv artifacts/cloudinit-win10-a64/CloudInit.exe artifacts/cloudinit-win10-a64/CloudInit-win10-a64.exe
-        # win78-x64
-        mv artifacts/cloudinit-win78-x64/CloudInit.exe artifacts/cloudinit-win78-x64/CloudInit-win78-x64.exe
-        # win78-x86: 仅带架构名
-        mv artifacts/cloudinit-win78-x86/CloudInit.exe artifacts/cloudinit-win78-x86/CloudInit-win78-x86.exe
-
     - name: Create Stable Release
       uses: softprops/action-gh-release@v1
       with:
         fail_on_unmatched_files: false
         files: |
-          artifacts/cloudinit-win10-x64/CloudInit-win10-x64.exe
-          artifacts/cloudinit-win10-x86/CloudInit-win10-x86.exe
-          artifacts/cloudinit-win10-a64/CloudInit-win10-a64.exe
-          artifacts/cloudinit-win78-x64/CloudInit-win78-x64.exe
-          artifacts/cloudinit-win78-x86/CloudInit-win78-x86.exe
-          artifacts/cloudinit-linux-x64/CloudInit-linux-x64
-          artifacts/cloudinit-linux-a64/CloudInit-linux-a64
-          artifacts/cloudinit-macos-x64/CloudInit-macos-x64
-          artifacts/cloudinit-macos-a64/CloudInit-macos-a64
+          artifacts/CloudInit-win10-x64.exe
+          artifacts/CloudInit-win10-x86.exe
+          artifacts/CloudInit-win10-a64.exe
+          artifacts/CloudInit-win78-x64.exe
+          artifacts/CloudInit-win78-x86.exe
+          artifacts/CloudInit-linux-x64
+          artifacts/CloudInit-linux-a64
+          artifacts/CloudInit-macos-x64
+          artifacts/CloudInit-macos-a64
         tag_name: ${{ github.event.inputs.version }}
         name: Release ${{ github.event.inputs.version }}
         draft: false
