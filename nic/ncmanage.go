@@ -58,8 +58,11 @@ func (m *NCManage) getNIC() error {
 		// 获取IPv4/IPv6地址信息
 		ip4Addr, ip6Addr := firstAddresses(iface.Addrs)
 
-		// 获取IPv4网关
+		// 获取IPv4网关（Linux/macOS 以接口名为键，Windows 以接口地址为键）
 		ip4Gate := gw.V4[iface.Name]
+		if ip4Gate == "" && ip4Addr != "" {
+			ip4Gate = gw.V4[ip4Addr]
+		}
 		if ip4Gate == "" && gw.DefaultV4 != "" {
 			ip4Gate = gw.DefaultV4
 		}

@@ -3,78 +3,85 @@
 package nic
 
 import (
-	"errors"
-	"runtime"
-	"unsafe"
-
-	"golang.org/x/sys/windows"
+	"os/exec"
+	"strconv"
+	"strings"
 )
 
-const (
-	afUnspec               = 0
-	gaaFlagIncludeGateways = 0x0080
-)
-
-// discoverGateways 通过 GetAdaptersAddresses 获取各网卡的默认网关
+// discoverGateways 解析 route print 输出获取网关
+//
+// 不使用 GetAdaptersAddresses：该接口的结构体布局随 Windows 版本变化
+// （Vista/7/8/10 长度不同），在 Win7/8 上容易取不到 FirstGatewayAddress。
+// route print 的输出行为各版本一致，且只解析数字行，不受系统语言影响。
 func discoverGateways() gatewayInfo {
 	info := newGatewayInfo()
 
-	first, buf, err := adapterAddresses()
+	out, err := exec.Command("route", "print", "-4").Output()
 	if err != nil {
-		return info
+		// 极老版本系统不支持 -4 参数时退回完整路由表
+		out, err = exec.Command("route", "print").Output()
+		if err != nil {
+			return info
+		}
 	}
 
-	for adapter := first; adapter != nil; adapter = adapter.Next {
-		name := windows.UTF16PtrToString(adapter.FriendlyName)
-		if name == "" {
+	bestDefaultMetric := -1
+
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
 			continue
 		}
 
-		for gateway := adapter.FirstGatewayAddress; gateway != nil; gateway = gateway.Next {
-			ip := gateway.Address.IP()
-			if ip == nil {
-				continue
-			}
+		// 只处理数字行：目标地址、掩码、网关、接口地址
+		if !isIPv4(fields[0]) || !isIPv4(fields[1]) || !isIPv4(fields[3]) {
+			continue
+		}
+		gateway := fields[2]
+		if !isIPv4(gateway) {
+			continue // On-link（在链路上）等非网关行
+		}
 
-			if v4 := ip.To4(); v4 != nil {
-				if info.V4[name] == "" {
-					info.V4[name] = v4.String()
-				}
-				if info.DefaultV4 == "" {
-					info.DefaultV4 = v4.String()
-				}
-			} else {
-				if info.V6[name] == "" {
-					info.V6[name] = ip.String()
-				}
-				if info.DefaultV6 == "" {
-					info.DefaultV6 = ip.String()
-				}
+		interfaceIP := fields[3]
+
+		if fields[0] == "0.0.0.0" && fields[1] == "0.0.0.0" {
+			info.V4[interfaceIP] = gateway
+
+			// 默认网关取 metric 最小的一条
+			metric := 0
+			if parsed, errMetric := strconv.Atoi(fields[4]); errMetric == nil {
+				metric = parsed
 			}
+			if info.DefaultV4 == "" || bestDefaultMetric < 0 || metric < bestDefaultMetric {
+				info.DefaultV4 = gateway
+				bestDefaultMetric = metric
+			}
+			continue
+		}
+
+		if _, exists := info.V4[interfaceIP]; !exists {
+			info.V4[interfaceIP] = gateway
 		}
 	}
 
-	runtime.KeepAlive(buf)
 	return info
 }
 
-// adapterAddresses 分配缓冲区并调用 GetAdaptersAddresses
-func adapterAddresses() (*windows.IpAdapterAddresses, []byte, error) {
-	size := uint32(64 * 1024)
-
-	for attempt := 0; attempt < 4; attempt++ {
-		buf := make([]byte, size)
-		first := (*windows.IpAdapterAddresses)(unsafe.Pointer(&buf[0]))
-
-		err := windows.GetAdaptersAddresses(afUnspec, gaaFlagIncludeGateways, 0, first, &size)
-		if err == nil {
-			return first, buf, nil
-		}
-		if err == windows.ERROR_BUFFER_OVERFLOW {
-			continue
-		}
-		return nil, nil, err
+// isIPv4 判断是否为点分十进制 IPv4 字符串
+func isIPv4(value string) bool {
+	parts := strings.Split(value, ".")
+	if len(parts) != 4 {
+		return false
 	}
-
-	return nil, nil, errors.New("GetAdaptersAddresses: 缓冲区不足")
+	for _, part := range parts {
+		if part == "" || len(part) > 3 {
+			return false
+		}
+		for _, ch := range part {
+			if ch < '0' || ch > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }

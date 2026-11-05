@@ -1,5 +1,9 @@
 name: Build & Release CloudInit
 
+# 注意：发布资产文件名不可变更（如 CloudInit-win78-x64.exe）。
+# 老版本客户端（含 Python 版本）的自动更新依赖文件名中的“系统标识 + 架构”进行匹配，
+# 改名会导致存量虚拟机无法升级。win78 必须使用 Go 1.20 编译（Go 1.21+ 不支持 Win7/8.1）。
+
 on:
   push:
     branches: [ main, master ]

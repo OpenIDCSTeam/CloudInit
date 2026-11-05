@@ -7,8 +7,10 @@ OpenIDC 虚拟机初始化与状态上报服务。部署在虚拟机内部，负
 ## 功能特性
 
 - **状态上报** - 定时采集 CPU/内存/磁盘/GPU/网络 等硬件状态，上报至宿主机
+- **主控探测** - 同一子网内从 `gateway_offset` 开始逐个地址尝试，直到找到主控；全部失败则本轮不上报
 - **指令执行** - 接收宿主机下发的关机、重启、改密码、改主机名等控制指令
 - **命令下发** - 接收宿主机下发的远程命令，异步执行并回传结果
+- **VMware Tools 清理** - 非 VMware/ESXi 环境自动停止服务、结束进程并静默卸载（兼容 1063 等服务状态异常）
 - **磁盘扩容** - 启动时自动检测并扩容根分区（支持 ext4/xfs/btrfs/APFS/NTFS）
 - **自动更新** - 后台守护协程每24小时检查 GitHub Release，自动下载更新
 - **多平台支持** - 通过平台抽象层适配 Linux / Windows / macOS
@@ -106,6 +108,9 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o CloudInit-win10-x64.exe .
 ```
 
 > Windows 7/8.1 需使用 Go 1.20 及以下版本编译，Go 1.21+ 不再支持旧版 Windows。
+>
+> **发布资产文件名不可变更**（`CloudInit-win78-x64.exe`、`CloudInit-win10-x64.exe`、`CloudInit-linux-x64` 等）：
+> 存量客户端的自动更新按文件名中的“系统标识 + 架构”匹配资产，改名会导致老版本无法升级。
 
 ### Linux 部署
 
@@ -146,7 +151,7 @@ report_interval = 60          # 上报间隔（秒）
 report_port = 1880            # 上报端口
 report_path = /api/client/upload
 report_host =                 # 固定上报地址（留空则自动推算）
-gateway_offset = 2            # 网关偏移量
+gateway_offset = 2            # 上报地址扫描起点（子网内依次尝试 .2~.254；0/1 表示从网关开始）
 
 [update]
 enabled = true                # 是否启用自动更新

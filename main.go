@@ -64,6 +64,9 @@ type CloudInitService struct {
 	lastNetworkD int
 	lastFluUsage int
 
+	// 各子网上次成功上报的主控地址（子网前缀 -> IP），用于后续优先命中
+	masterTargets map[string]string
+
 	client *http.Client
 }
 
@@ -84,6 +87,7 @@ func NewCloudInitService() *CloudInitService {
 		autoUpdate:    core.NewAutoUpdate(),
 		cmdExecutor:   core.NewCmdExecutor(),
 		toDeskManager: remotedesk.New(),
+		masterTargets: map[string]string{},
 		client:        &http.Client{},
 	}
 }
@@ -204,31 +208,126 @@ func (s *CloudInitService) mainLoop() {
 			// 使用固定配置的上报地址
 			url := fmt.Sprintf("http://%s:%d%s",
 				config.Cfg.ReportHost, config.Cfg.ReportPort, config.Cfg.ReportPath)
-			s.reportStatus(url, statusData)
+			s.reportStatus(url, statusData, 5*time.Second, false)
 		} else {
-			// 自动从网卡网关推算上报地址
+			// 自动从网卡网关推算上报地址：在子网内遍历，直到找到主控
+			// 同一子网只探测一次，避免多网卡重复扫描
+			resolved := map[string]string{}
 			for _, nicConfig := range nicManager.NICList {
-				gateway := nicConfig.Ip4Gate
-				if gateway == "" || !strings.HasSuffix(gateway, ".1") {
-					continue
-				}
 				if nicConfig.MacAddr == zeroMAC {
 					continue
 				}
+				if nicConfig.Ip4Gate == "" || !strings.HasSuffix(nicConfig.Ip4Gate, ".1") {
+					continue
+				}
 
-				// 根据网关偏移量计算目标IP
-				parts := strings.Split(gateway, ".")
-				parts[len(parts)-1] = strconv.Itoa(config.Cfg.GatewayOffset)
-				targetIP := strings.Join(parts, ".")
+				prefix := subnetPrefix(nicConfig.Ip4Gate)
+				if prefix == "" {
+					continue
+				}
 
-				url := fmt.Sprintf("http://%s:%d%s?nic=%s",
-					targetIP, config.Cfg.ReportPort, config.Cfg.ReportPath, nicConfig.MacAddr)
-				s.reportStatus(url, statusData)
+				targetIP, ok := resolved[prefix]
+				if !ok {
+					// 首次遇到该子网：遍历候选地址并顺带完成本网卡上报
+					targetIP = s.reportViaNIC(nicConfig, prefix, statusData)
+					resolved[prefix] = targetIP
+					continue
+				}
+
+				// 同一子网的其它网卡：直接上报到已找到的主控
+				if targetIP != "" {
+					url := buildReportURL(targetIP, nicConfig.MacAddr)
+					s.reportStatus(url, statusData, 5*time.Second, true)
+				}
 			}
 		}
 
 		timeLast = now
 	}
+}
+
+// reportViaNIC 在网卡所在子网内遍历候选地址，直到找到主控并完成上报
+// 返回找到的主控IP，未找到时返回空字符串
+func (s *CloudInitService) reportViaNIC(nicConfig *nic.NCConfig, prefix string, data *statusPayload) string {
+	candidates := masterCandidates(prefix, config.Cfg.GatewayOffset)
+
+	// 优先使用上次成功的主控地址，避免每轮都全网扫描
+	if lastTarget := s.masterTargets[prefix]; lastTarget != "" {
+		candidates = moveToFront(candidates, lastTarget)
+	}
+
+	for index, targetIP := range candidates {
+		// 首个候选（缓存/默认偏移）给足超时；扫描其余地址时用短超时，避免长时间阻塞
+		timeout := time.Second
+		if index == 0 {
+			timeout = 5 * time.Second
+		}
+
+		url := buildReportURL(targetIP, nicConfig.MacAddr)
+		if s.reportStatus(url, data, timeout, true) {
+			if s.masterTargets[prefix] != targetIP {
+				logger.Infof("[上报] 子网 %s* 找到主控: %s", prefix, targetIP)
+				s.masterTargets[prefix] = targetIP
+			}
+			return targetIP
+		}
+	}
+
+	delete(s.masterTargets, prefix)
+	logger.Warnf("[上报] 网卡 %s 所在子网 %s* 未找到主控，本轮不上报",
+		nicConfig.MacAddr, prefix)
+	return ""
+}
+
+// buildReportURL 构造上报地址
+func buildReportURL(targetIP, mac string) string {
+	return fmt.Sprintf("http://%s:%d%s?nic=%s",
+		targetIP, config.Cfg.ReportPort, config.Cfg.ReportPath, mac)
+}
+
+// subnetPrefix 提取网关所在子网前缀，如 192.168.1.
+func subnetPrefix(gateway string) string {
+	parts := strings.Split(gateway, ".")
+	if len(parts) != 4 {
+		return ""
+	}
+	return parts[0] + "." + parts[1] + "." + parts[2] + "."
+}
+
+// masterCandidates 生成子网内的候选地址（从偏移量开始递增，末尾回绕）
+func masterCandidates(prefix string, offset int) []string {
+	start := offset
+	if start < 1 {
+		start = 1 // offset=0 表示直接上报到网关
+	}
+	if start > 254 {
+		start = 254
+	}
+
+	candidates := make([]string, 0, 254)
+	for last := start; last <= 254; last++ {
+		candidates = append(candidates, prefix+strconv.Itoa(last))
+	}
+	// 回绕，补齐 start 之前的地址（跳过网络地址 .0 与网关 .1）
+	for last := 2; last < start; last++ {
+		candidates = append(candidates, prefix+strconv.Itoa(last))
+	}
+	return candidates
+}
+
+// moveToFront 将指定地址移动到候选列表首位（不存在时保持原顺序）
+func moveToFront(candidates []string, value string) []string {
+	for index, item := range candidates {
+		if item != value {
+			continue
+		}
+		result := make([]string, 0, len(candidates))
+		result = append(result, value)
+		result = append(result, candidates[:index]...)
+		result = append(result, candidates[index+1:]...)
+		return result
+	}
+	return candidates
 }
 
 // collectStatus 采集状态并计算网络增量
@@ -261,58 +360,69 @@ func (s *CloudInitService) calcNetworkDelta() {
 }
 
 // reportStatus 上报状态到宿主机，并处理返回的控制指令
-func (s *CloudInitService) reportStatus(url string, data *statusPayload) {
+// 返回 true 表示该地址上有主控应答（HTTP 200 且响应可解析）
+func (s *CloudInitService) reportStatus(url string, data *statusPayload, timeout time.Duration, quiet bool) bool {
 	body, err := json.Marshal(data)
 	if err != nil {
 		logger.Errorf("上报异常: %v", err)
-		return
+		return false
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		logger.Errorf("上报异常: %v", err)
-		return
+		return false
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
+		if quiet {
+			logger.Debugf("上报失败: %s (%v)", url, err)
+		} else if ctx.Err() == context.DeadlineExceeded {
 			logger.Debugf("上报超时: %s", url)
 		} else if isConnectionError(err) {
 			logger.Debugf("上报连接失败: %s", url)
 		} else {
 			logger.Errorf("上报异常: %v", err)
 		}
-		return
+		return false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		logger.Warnf("上报失败 [%s] HTTP %d", url, resp.StatusCode)
-		return
+		if quiet {
+			logger.Debugf("上报失败 [%s] HTTP %d", url, resp.StatusCode)
+		} else {
+			logger.Warnf("上报失败 [%s] HTTP %d", url, resp.StatusCode)
+		}
+		return false
 	}
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Errorf("上报异常: %v", err)
-		return
+		return false
 	}
 
 	var response struct {
 		Data map[string]interface{} `json:"data"`
 	}
 	if err = json.Unmarshal(raw, &response); err != nil {
-		logger.Errorf("上报异常: %v", err)
-		return
+		if quiet {
+			logger.Debugf("上报响应非主控格式: %s (%v)", url, err)
+		} else {
+			logger.Errorf("上报异常: %v", err)
+		}
+		return false
 	}
 
 	vmData := response.Data
 	if len(vmData) == 0 {
-		return
+		return true
 	}
 
 	// 更新虚拟机配置信息
@@ -325,13 +435,13 @@ func (s *CloudInitService) reportStatus(url string, data *statusPayload) {
 		logger.Warnf("收到关机指令, 执行关机...")
 		s.powerCtrl.ShutdownSystem()
 		atomic.StoreInt32(&s.running, 0)
-		return
+		return true
 	}
 	if vmFlag == "S_RESET" {
 		logger.Warnf("收到重启指令, 执行重启...")
 		s.powerCtrl.RebootSystem()
 		atomic.StoreInt32(&s.running, 0)
-		return
+		return true
 	}
 
 	// 非阻塞执行虚拟机配置（改主机名、改密码）
@@ -350,6 +460,8 @@ func (s *CloudInitService) reportStatus(url string, data *statusPayload) {
 			s.cmdExecutor.ExecuteCommand(vmCmd, baseURL)
 		}
 	}
+
+	return true
 }
 
 // safeRun 执行可能失败的任务，异常仅记录日志

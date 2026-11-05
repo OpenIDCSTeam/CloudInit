@@ -164,16 +164,19 @@ func (p *windowsPlatform) doCheckAndUninstallVMTools() {
 
 	logger.Infof("[VMTools管理] 非VMware/ESXi环境，检查是否安装了VMware Tools")
 
-	// 检查VMware Tools是否已安装（通过注册表查询卸载信息）
-	check := runShell(`reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall" /s /f "VMware Tools"`)
-	if check.Returncode != 0 || check.Err != nil || !strings.Contains(check.Stdout, "VMware Tools") {
+	if !vmwareToolsInstalled() {
 		logger.Infof("[VMTools管理] 未检测到VMware Tools安装，无需卸载")
 		return
 	}
 
+	productCode := findVMwareToolsProductCode()
 	logger.Infof("[VMTools管理] 检测到VMware Tools已安装，开始静默卸载")
 
-	// 卸载前先强制结束VM相关进程
+	// 先停止服务，再结束进程：
+	// 进程被强杀后再发停止控制，SCM 会返回 1063（控制器连接失败），因此顺序不能颠倒
+	stopVMwareServices()
+
+	// 结束残留的VM相关进程，释放文件占用
 	vmProcesses := []string{
 		"vmtoolsd.exe", "vmwaretray.exe", "vmacthlp.exe",
 		"VGAuthService.exe", "vm3dservice.exe", "vmwareuser.exe",
@@ -181,14 +184,18 @@ func (p *windowsPlatform) doCheckAndUninstallVMTools() {
 	for _, proc := range vmProcesses {
 		runShell("taskkill /F /IM " + proc)
 	}
+	logger.Infof("[VMTools管理] 已停止VM相关服务并结束残留进程")
 
-	// 停止VM相关服务
-	vmServices := []string{"VMTools", "VGAuthService", "vm3dservice", "VMwarePhysicalDiskHelper", "VMUSBArbService"}
-	for _, svc := range vmServices {
-		runShell("net stop " + svc)
+	// 执行卸载（MSI → 官方卸载程序 → WMI → PowerShell 依次兜底）
+	ok, code := uninstallVMwareTools(productCode)
+	if ok {
+		logger.Infof("[VMTools管理] VMware Tools 静默卸载完成")
+	} else {
+		logger.Warnf("[VMTools管理] VMware Tools 卸载未完成（返回码: %d），清理残留服务", code)
 	}
 
-	logger.Infof("[VMTools管理] 已结束VM相关进程和服务")
+	// 无论卸载是否成功都清理残留服务注册，避免服务缺失/指向失效文件导致的 1063
+	removeVMwareServices()
 }
 
 // ==================== Windows激活 ====================
