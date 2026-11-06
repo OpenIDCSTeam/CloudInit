@@ -183,12 +183,15 @@ func (m *Manager) startSunLogin() {
 	}
 
 	logger.Infof("[向日葵] 已启动: %s", exePath)
+	// 便携版可能解包后启动 SunloginClient.exe，两种进程名都要处理
+	go hideWindowsOfProcess("Sunlogin.exe", 30)
 	go hideWindowsOfProcess("SunloginClient.exe", 30)
 }
 
 // findSunLoginExe 在工具目录中查找向日葵客户端
 func findSunLoginExe(dir string) string {
 	for _, name := range []string{
+		"Sunlogin.exe",
 		"SunloginClient.exe",
 		"SunLogin.exe",
 		"SunloginClientPe.exe",

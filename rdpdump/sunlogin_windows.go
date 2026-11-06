@@ -56,7 +56,7 @@ func SunLogin(hintDir string) Info {
 
 	// 内存：V12 便携版界面文本
 	if info.Code == "" || info.Password == "" {
-		if pid := findProcessPID("SunloginClient.exe", "SunloginClientPe.exe", "SunloginClientCore.exe"); pid != 0 {
+		if pid := findProcessPID("Sunlogin.exe", "SunloginClient.exe", "SunloginClientPe.exe", "SunloginClientCore.exe"); pid != 0 {
 			code, password := scanSunLoginMemory(pid)
 			if info.Code == "" {
 				info.Code = code

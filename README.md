@@ -157,7 +157,7 @@ C:\CloudInit\
     ├── MASAIO.cmd
     ├── ToDesk.exe      # 可选
     ├── AnyDesk.exe     # 可选
-    └── SunloginClient.exe  # 可选（向日葵）
+    └── Sunlogin.exe    # 可选（向日葵）
 ```
 
 老版本把工具直接放在程序根目录的，启动时会自动迁移到 `tool`（`.version` 保持在程序目录不动）。注册为 Windows 服务或通过计划任务启动。
