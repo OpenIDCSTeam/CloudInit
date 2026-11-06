@@ -5,7 +5,7 @@ on:
     branches: [ main, master ]
     paths:
       - 'PasswdDump/**'
-      - '.github/workflows/build-passwddump.yml'
+      - '.github/workflows/build-pass.yml'
   pull_request:
     branches: [ main, master ]
     paths:

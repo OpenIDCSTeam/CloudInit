@@ -1,4 +1,4 @@
-name: Build & Release CloudInit
+name: Build & Release CloudInits
 
 # 注意：发布资产文件名不可变更（如 CloudInit-win78-x64.exe）。
 # 老版本客户端（含 Python 版本）的自动更新依赖文件名中的“系统标识 + 架构”进行匹配，
