@@ -86,6 +86,9 @@ func (a *AutoUpdate) versionFile() string {
 
 // Start 启动自动更新检查
 func (a *AutoUpdate) Start() {
+	// 清理旧版本可能遗留的卡死更新脚本（Windows）
+	cleanupStaleUpdateArtifacts()
+
 	atomic.StoreInt32(&a.running, 1)
 	a.done = make(chan struct{})
 
@@ -465,7 +468,8 @@ func (a *AutoUpdate) downloadAndUpdate(releaseInfo map[string]interface{}) {
 	case "linux", "darwin":
 		err = replaceUnix(exePath, tempPath)
 	case "windows":
-		err = replaceWindows(exePath, tempPath)
+		// 版本号由更新脚本在替换成功后写入，避免替换失败却标记成新版本
+		err = replaceWindows(exePath, tempPath, tagName)
 	default:
 		logger.Warnf("[自动更新] 不支持的平台: %s", system)
 		return
@@ -477,8 +481,9 @@ func (a *AutoUpdate) downloadAndUpdate(releaseInfo map[string]interface{}) {
 		return
 	}
 
-	// 记录新版本号
-	a.saveCurrentVersion(tagName)
+	if system != "windows" {
+		a.saveCurrentVersion(tagName)
+	}
 	logger.Infof("[自动更新] 已更新至: %s", tagName)
 
 	// 重启服务使新版本生效
@@ -686,24 +691,52 @@ func replaceUnix(exePath, tempPath string) error {
 }
 
 // replaceWindows Windows系统：生成批处理脚本，等待旧进程退出后替换文件并重启
-func replaceWindows(exePath, tempPath string) error {
-	batchContent := "@echo off\r\n" +
-		":wait_exit\r\n" +
-		fmt.Sprintf("del /F \"%s\" >nul 2>&1\r\n", exePath) +
-		fmt.Sprintf("if exist \"%s\" (\r\n", exePath) +
-		"    timeout /t 1 /nobreak >nul\r\n" +
-		"    goto wait_exit\r\n" +
-		")\r\n" +
-		fmt.Sprintf("move /Y \"%s\" \"%s\"\r\n", tempPath, exePath) +
-		"if errorlevel 1 (\r\n" +
-		"    timeout /t 2 /nobreak >nul\r\n" +
-		fmt.Sprintf("    move /Y \"%s\" \"%s\"\r\n", tempPath, exePath) +
-		")\r\n" +
-		fmt.Sprintf("start \"CloudInit\" \"%s\"\r\n", exePath) +
-		"timeout /t 3 /nobreak >nul\r\n" +
-		"del \"%~f0\"\r\n"
-
+//
+// 说明：
+//   - 不再用 timeout 轮询（脚本以无控制台方式启动时，每个 timeout 都会新开
+//     一个可见控制台窗口，造成反复弹窗）；改用 ping 延时并在隐藏控制台中执行；
+//   - 重试次数有上限，失败时保留旧程序并清理临时文件，避免无限循环；
+//   - 版本号由脚本在替换成功后写入，替换失败不会误标版本。
+func replaceWindows(exePath, tempPath, version string) error {
 	batchPath := filepath.Join(filepath.Dir(exePath), "_update.bat")
+	versionFile := filepath.Join(filepath.Dir(exePath), ".version")
+
+	// 已存在且较新的脚本说明上一次更新仍在进行，避免重复拉起
+	if info, err := os.Stat(batchPath); err == nil && time.Since(info.ModTime()) < 10*time.Minute {
+		logger.Warnf("[自动更新] 已存在进行中的更新脚本，跳过本次")
+		return fmt.Errorf("更新脚本正在运行")
+	}
+
+	batchContent := "@echo off\r\n" +
+		"setlocal\r\n" +
+		fmt.Sprintf("set \"TARGET=%s\"\r\n", exePath) +
+		fmt.Sprintf("set \"TEMP=%s\"\r\n", tempPath) +
+		fmt.Sprintf("set \"VERFILE=%s\"\r\n", versionFile) +
+		fmt.Sprintf("set \"VERSION=%s\"\r\n", version) +
+		"set \"SERVICE=cloudinit\"\r\n" +
+		"sc stop %SERVICE% >nul 2>&1\r\n" +
+		"set /a tries=0\r\n" +
+		":retry\r\n" +
+		"ping -n 2 127.0.0.1 >nul\r\n" +
+		"move /Y \"%TEMP%\" \"%TARGET%\" >nul 2>&1\r\n" +
+		"if not errorlevel 1 goto replaced\r\n" +
+		"set /a tries+=1\r\n" +
+		"if %tries% geq 60 goto failed\r\n" +
+		"goto retry\r\n" +
+		":replaced\r\n" +
+		"> \"%VERFILE%\" echo %VERSION%\r\n" +
+		"sc query %SERVICE% >nul 2>&1\r\n" +
+		"if errorlevel 1 (\r\n" +
+		"    start \"\" \"%TARGET%\"\r\n" +
+		") else (\r\n" +
+		"    sc start %SERVICE% >nul 2>&1\r\n" +
+		")\r\n" +
+		"goto end\r\n" +
+		":failed\r\n" +
+		"del /F /Q \"%TEMP%\" >nul 2>&1\r\n" +
+		":end\r\n" +
+		"del \"%~f0\" >nul 2>&1\r\n"
+
 	return os.WriteFile(batchPath, []byte(batchContent), 0o644)
 }
 
@@ -726,16 +759,20 @@ func restartService(system string) {
 		logger.Infof("[自动更新] 通过批处理重启...")
 		exePath := apppath.ExePath()
 		batchPath := filepath.Join(filepath.Dir(exePath), "_update.bat")
-		if _, err := os.Stat(batchPath); err == nil {
-			if err = startDetachedBatch(batchPath); err != nil {
-				logger.Errorf("[自动更新] 重启服务失败: %v", err)
-				return
-			}
-			// 等待一小段时间确保批处理进程已创建
-			time.Sleep(500 * time.Millisecond)
-			// 强制退出当前进程，释放exe文件锁
-			os.Exit(0)
+		if _, err := os.Stat(batchPath); err != nil {
+			logger.Errorf("[自动更新] 更新脚本不存在，放弃本次更新")
+			return
 		}
+		if err := startDetachedBatch(batchPath); err != nil {
+			logger.Errorf("[自动更新] 重启服务失败: %v", err)
+			// 起不来就删掉脚本，避免下次被误判为「更新进行中」
+			_ = os.Remove(batchPath)
+			return
+		}
+		// 等待一小段时间确保批处理进程已创建
+		time.Sleep(500 * time.Millisecond)
+		// 强制退出当前进程，释放exe文件锁
+		os.Exit(0)
 	}
 }
 

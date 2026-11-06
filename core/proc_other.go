@@ -9,3 +9,6 @@ func startDetachedBatch(batchPath string) error {
 	cmd := exec.Command(batchPath)
 	return cmd.Start()
 }
+
+// cleanupStaleUpdateArtifacts 非 Windows 平台无需清理
+func cleanupStaleUpdateArtifacts() {}
