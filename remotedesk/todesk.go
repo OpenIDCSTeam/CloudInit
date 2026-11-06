@@ -120,6 +120,9 @@ func (m *ToDeskManager) GetToDeskInfo() *ToDeskInfo {
 
 // startToDesk 启动ToDesk.exe（不阻塞主进程），启动后隐藏主窗口
 func (m *ToDeskManager) startToDesk() {
+	// 拉起前再确认一次自动更新已关闭（避免 ToDesk 退出时把配置改回去）
+	m.disableToDeskAutoUpdate()
+
 	m.mu.Lock()
 	m.lastStartAttempt = time.Now()
 	m.mu.Unlock()
