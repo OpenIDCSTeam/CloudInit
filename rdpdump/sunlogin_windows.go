@@ -105,7 +105,7 @@ var sunLoginMarkups = [][]byte{
 	[]byte("<f f=yahei.24 c=color_edit >"),
 }
 
-// scanSunLoginMemory 扫描向日葵进程内存
+// scanSunLoginMemory 扫描向日葵进程内存（ANSI 与 UTF-16LE 两种编码）
 func scanSunLoginMemory(pid uint32) (string, string) {
 	code := ""
 	password := ""
@@ -113,16 +113,10 @@ func scanSunLoginMemory(pid uint32) (string, string) {
 	fastcodeNeedle := []byte(`fastcode" : "`)
 
 	scanProcess(pid, func(buffer []byte) bool {
+		// ---- ANSI ----
 		if code == "" {
 			if index := bytes.Index(buffer, fastcodeNeedle); index >= 0 {
-				segment := buffer[index+len(fastcodeNeedle):]
-				limit := len(segment)
-				if limit > 24 {
-					limit = 24
-				}
-				if digits := extractDigits(segment[:limit]); len(digits) >= 6 {
-					code = digits
-				}
+				code = readDigits(buffer[index+len(fastcodeNeedle):], 24)
 			}
 		}
 
@@ -132,16 +126,28 @@ func scanSunLoginMemory(pid uint32) (string, string) {
 				if index < 0 {
 					continue
 				}
-				rest := buffer[index+len(markup):]
-				end := bytes.Index(rest, []byte("</f>"))
-				if end <= 0 || end > 64 {
+				if candidate := readUntil(buffer[index+len(markup):], []byte("</f>"), 64); validToken(candidate) {
+					password = candidate
+					break
+				}
+			}
+		}
+
+		// ---- UTF-16LE ----
+		if code == "" {
+			if index := bytes.Index(buffer, utf16LE(`fastcode" : "`)); index >= 0 {
+				code = readDigitsUTF16(buffer[index+len(utf16LE(`fastcode" : "`)):], 24)
+			}
+		}
+
+		if password == "" {
+			for _, markup := range sunLoginMarkups {
+				needle := utf16LE(string(markup))
+				index := bytes.Index(buffer, needle)
+				if index < 0 {
 					continue
 				}
-				candidate := strings.TrimSpace(string(rest[:end]))
-				if strings.Contains(candidate, "..") || strings.Contains(candidate, "----") {
-					continue
-				}
-				if validToken(candidate) {
+				if candidate := readUntilUTF16(buffer[index+len(needle):], utf16LE("</f>"), 64); validToken(candidate) {
 					password = candidate
 					break
 				}
@@ -152,4 +158,66 @@ func scanSunLoginMemory(pid uint32) (string, string) {
 	})
 
 	return code, password
+}
+
+// readDigits 读取开头的连续数字
+func readDigits(data []byte, limit int) string {
+	if len(data) > limit {
+		data = data[:limit]
+	}
+	return extractDigits(data)
+}
+
+// readDigitsUTF16 读取 UTF-16LE 字符串开头的连续数字
+func readDigitsUTF16(data []byte, limit int) string {
+	sb := strings.Builder{}
+	for i := 0; i+1 < len(data) && i < limit*2; i += 2 {
+		if data[i+1] != 0 {
+			break
+		}
+		ch := data[i]
+		if ch >= '0' && ch <= '9' {
+			sb.WriteByte(ch)
+			continue
+		}
+		if sb.Len() > 0 {
+			break
+		}
+	}
+	return sb.String()
+}
+
+// readUntil 读取直到分隔符
+func readUntil(data, sep []byte, limit int) string {
+	end := bytes.Index(data, sep)
+	if end <= 0 || end > limit {
+		return ""
+	}
+	return strings.TrimSpace(string(data[:end]))
+}
+
+// readUntilUTF16 读取 UTF-16LE 文本直到分隔符
+func readUntilUTF16(data, sep []byte, limit int) string {
+	end := bytes.Index(data, sep)
+	if end <= 0 || end > limit*2 {
+		return ""
+	}
+
+	sb := strings.Builder{}
+	for i := 0; i+1 < end; i += 2 {
+		if data[i+1] != 0 {
+			return ""
+		}
+		sb.WriteByte(data[i])
+	}
+	return strings.TrimSpace(sb.String())
+}
+
+// utf16LE 把 ASCII 字符串编码为 UTF-16LE 字节
+func utf16LE(value string) []byte {
+	out := make([]byte, 0, len(value)*2)
+	for _, ch := range value {
+		out = append(out, byte(ch), byte(ch>>8))
+	}
+	return out
 }

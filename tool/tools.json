@@ -4,6 +4,16 @@
       "name": "MASAIO.cmd",
       "version": "3.11.1",
       "file": "MASAIO.cmd"
+    },
+    {
+      "name": "AnyDesk.exe",
+      "version": "5.3.3",
+      "file": "AnyDesk.exe"
+    },
+    {
+      "name": "Sunlogin.exe",
+      "version": "12.0.0",
+      "file": "Sunlogin.exe"
     }
   ]
 }

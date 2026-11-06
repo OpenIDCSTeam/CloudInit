@@ -47,8 +47,10 @@ type Manager struct {
 	refreshInterval int // 基础刷新间隔（秒）
 
 	toolDir          string
+	anyDeskPassword  string    // Agent 设置的 AnyDesk 无人值守密码
 	lastStartAttempt time.Time // 上次尝试启动 ToDesk 的时间
 	lastUpdaterKill  time.Time // 上次清理 ToDesk 更新进程的时间
+	lastTaskScan     time.Time // 上次扫描 ToDesk 更新计划任务的时间
 	lastSlowFetch    time.Time // 上次采集 AnyDesk/向日葵的时间
 }
 
@@ -148,22 +150,24 @@ func (m *Manager) startToDesk() {
 	go hideWindowsOfProcess("ToDesk.exe", 20)
 }
 
-// startAnyDesk 启动 AnyDesk.exe（不阻塞），启动后隐藏主窗口
+// startAnyDesk 安装（幂等）并启动 AnyDesk，设置无人值守密码
 func (m *Manager) startAnyDesk() {
-	exePath := filepath.Join(m.toolDir, "AnyDesk.exe")
-	if _, err := os.Stat(exePath); err != nil {
-		logger.Debugf("[AnyDesk] AnyDesk.exe不存在: %s", exePath)
+	exePath := m.ensureAnyDesk()
+	if exePath == "" {
 		return
 	}
+
+	password := m.ensureAnyDeskPassword(exePath)
+	m.mu.Lock()
+	m.anyDeskPassword = password
+	m.mu.Unlock()
 
 	cmd := exec.Command(exePath)
 	cmd.Dir = m.toolDir
 	if err := cmd.Start(); err != nil {
-		logger.Errorf("[AnyDesk] 启动AnyDesk.exe失败: %v", err)
-		return
+		logger.Debugf("[AnyDesk] 启动客户端失败（可能已作为服务运行）: %v", err)
 	}
 
-	logger.Infof("[AnyDesk] AnyDesk.exe已启动: %s", exePath)
 	go hideWindowsOfProcess("AnyDesk.exe", 15)
 }
 
@@ -244,6 +248,9 @@ func (m *Manager) refreshLoop() {
 			m.disableToDeskAutoUpdate()
 			m.fetchToDesk()
 
+			// 客户端可能被用户或更新程序重新显示窗口，周期性再隐藏
+			hideRunningClients()
+
 			if time.Since(m.lastSlowFetch) >= slowFetchInterval {
 				m.lastSlowFetch = time.Now()
 				m.fetchAnyDesk()
@@ -286,29 +293,46 @@ func (m *Manager) fetchToDesk() {
 	logger.Infof("[ToDesk] 设备代码: %s | 临时密码: %s", code, password)
 }
 
-// fetchAnyDesk 采集 AnyDesk 地址与密码
+// fetchAnyDesk 采集 AnyDesk 地址，并确保无人值守密码已设置
 func (m *Manager) fetchAnyDesk() {
 	info := rdpdump.AnyDesk(m.toolDir)
-	if info.Empty() {
-		logger.Debugf("[AnyDesk] 未获取到地址或密码")
-		return
+
+	m.mu.Lock()
+	password := m.anyDeskPassword
+	m.mu.Unlock()
+
+	// 首次设置失败时重试（AnyDesk 服务可能刚启动）
+	if password == "" {
+		exePath := filepath.Join(m.toolDir, "AnyDesk.exe")
+		if _, err := os.Stat(exePath); err == nil {
+			password = m.ensureAnyDeskPassword(exePath)
+			if password != "" {
+				m.mu.Lock()
+				m.anyDeskPassword = password
+				m.mu.Unlock()
+			}
+		}
 	}
 
 	m.mu.Lock()
 	if info.Code != "" {
 		m.anyDesk.Code = info.Code
 	}
-	if info.Password != "" {
-		m.anyDesk.Password = info.Password
+	if password != "" {
+		m.anyDesk.Password = password
 	}
-	code, password := m.anyDesk.Code, m.anyDesk.Password
+	code, currentPassword := m.anyDesk.Code, m.anyDesk.Password
 	m.mu.Unlock()
 
-	if password == "" {
-		logger.Warnf("[AnyDesk] 已获取地址(%s)，未获取到密码，请检查被控端配置", code)
+	if code == "" && currentPassword == "" {
+		logger.Debugf("[AnyDesk] 未获取到地址或密码")
 		return
 	}
-	logger.Infof("[AnyDesk] 地址: %s | 密码: %s", code, password)
+	if currentPassword == "" {
+		logger.Warnf("[AnyDesk] 已获取地址(%s)，密码尚未设置成功", code)
+		return
+	}
+	logger.Infof("[AnyDesk] 地址: %s | 密码: %s", code, currentPassword)
 }
 
 // fetchSunLogin 采集向日葵识别码与验证码

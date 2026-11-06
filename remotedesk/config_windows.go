@@ -43,10 +43,55 @@ func (m *Manager) disableToDeskAutoUpdate() {
 	if shouldKill {
 		m.lastUpdaterKill = time.Now()
 	}
+	shouldScanTasks := time.Since(m.lastTaskScan) >= time.Hour
+	if shouldScanTasks {
+		m.lastTaskScan = time.Now()
+	}
 	m.mu.Unlock()
 
 	if shouldKill {
 		killToDeskUpdaters()
+	}
+	if shouldScanTasks {
+		disableToDeskUpdateTasks()
+	}
+}
+
+// disableToDeskUpdateTasks 禁用与 ToDesk 更新相关的计划任务
+func disableToDeskUpdateTasks() {
+	list := exec.Command("schtasks", "/query", "/fo", "csv", "/nh")
+	list.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+
+	out, err := list.Output()
+	if err != nil {
+		return
+	}
+
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if !strings.HasPrefix(line, `"`) {
+			continue
+		}
+
+		end := strings.Index(line[1:], `"`)
+		if end <= 0 {
+			continue
+		}
+		name := line[1 : 1+end]
+		lower := strings.ToLower(name)
+
+		if !strings.Contains(lower, "todesk") {
+			continue
+		}
+		if !strings.Contains(lower, "upd") && !strings.Contains(lower, "update") {
+			continue
+		}
+
+		change := exec.Command("schtasks", "/change", "/tn", name, "/disable")
+		change.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		if err := change.Run(); err == nil {
+			logger.Infof("[ToDesk] 已禁用更新计划任务: %s", name)
+		}
 	}
 }
 

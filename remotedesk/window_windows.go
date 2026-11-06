@@ -21,9 +21,33 @@ var (
 	procIsWindowVisible          = user32.NewProc("IsWindowVisible")
 	procGetWindowTextW           = user32.NewProc("GetWindowTextW")
 	procGetWindowTextLengthW     = user32.NewProc("GetWindowTextLengthW")
+	procGetClassNameW            = user32.NewProc("GetClassNameW")
 )
 
 const swHide = 0
+
+// skipWindowClasses 不需要隐藏的辅助窗口
+var skipWindowClasses = map[string]struct{}{
+	"tooltips_class32":     {},
+	"SysShadow":            {},
+	"ForegroundStaging":    {},
+	"TaskListThumbnailWnd": {},
+	"MSCTFIME UI":          {},
+	"IME":                  {},
+}
+
+// hideRunningClients 周期性隐藏已在运行的远程桌面客户端窗口
+func hideRunningClients() {
+	for _, name := range []string{"ToDesk.exe", "AnyDesk.exe", "Sunlogin.exe", "SunloginClient.exe"} {
+		pids := findProcessIDs(name)
+		if len(pids) == 0 {
+			continue
+		}
+		if hidden := hideProcessWindows(pids); hidden > 0 {
+			logger.Infof("[远程桌面] 已隐藏 %s 窗口（%d 个）", name, hidden)
+		}
+	}
+}
 
 // hideWindowsOfProcess 延迟隐藏指定进程的主窗口
 //
@@ -69,6 +93,8 @@ func findProcessIDs(exeName string) []uint32 {
 }
 
 // hideProcessWindows 隐藏指定进程的所有可见顶层窗口，返回隐藏数量
+//
+// 不依赖窗口标题：ToDesk/AnyDesk 使用自绘标题栏时 GetWindowText 可能为空。
 func hideProcessWindows(pids []uint32) int {
 	pidSet := make(map[uint32]struct{}, len(pids))
 	for _, pid := range pids {
@@ -87,8 +113,7 @@ func hideProcessWindows(pids []uint32) int {
 			return 1
 		}
 
-		// 跳过提示类窗口，仅隐藏真正的界面窗口
-		if title := windowTitle(hwnd); title == "" {
+		if _, skip := skipWindowClasses[windowClass(hwnd)]; skip {
 			return 1
 		}
 
@@ -112,4 +137,14 @@ func windowTitle(hwnd uintptr) string {
 	procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
 
 	return syscall.UTF16ToString(buf)
+}
+
+// windowClass 读取窗口类名
+func windowClass(hwnd uintptr) string {
+	buf := make([]uint16, 256)
+	length, _, _ := procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	if length == 0 {
+		return ""
+	}
+	return syscall.UTF16ToString(buf[:length])
 }

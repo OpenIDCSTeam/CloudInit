@@ -4,3 +4,6 @@ package remotedesk
 
 // hideWindowsOfProcess 非 Windows 平台无需处理窗口
 func hideWindowsOfProcess(exeName string, waitSeconds int) {}
+
+// hideRunningClients 非 Windows 平台无需处理窗口
+func hideRunningClients() {}
