@@ -87,8 +87,18 @@ jobs:
             source = os.path.join("tool", tool.get("file", name))
             base, ext = os.path.splitext(name)
             asset = f"CloudInit-tool-{base}-{version}{ext}"
-            shutil.copyfile(source, os.path.join("dist-tools", asset))
-            digest = hashlib.sha256(open(source, "rb").read()).hexdigest()
+
+            data = open(source, "rb").read()
+            # 批处理必须 CRLF 且末尾有换行，否则 MAS 自检会直接退出
+            if name.lower().endswith((".cmd", ".bat")):
+                data = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n").replace(b"\n", b"\r\n")
+                if not data.endswith(b"\r\n"):
+                    data += b"\r\n"
+
+            with open(os.path.join("dist-tools", asset), "wb") as handle:
+                handle.write(data)
+
+            digest = hashlib.sha256(data).hexdigest()
             entries.append({
                 "name": name,
                 "version": version,

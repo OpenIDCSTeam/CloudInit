@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -220,6 +221,9 @@ func (p *windowsPlatform) doActivateWindows() {
 		return
 	}
 
+	// MAS 会自检行尾：必须是 CRLF 且文件末尾有换行，否则直接退出
+	ensureScriptCRLF(masaioPath)
+
 	// 检查是否已激活
 	if p.windowsActivated() {
 		logger.Infof("[Windows激活] 系统已永久激活，跳过")
@@ -311,6 +315,47 @@ func locateMASAIO() string {
 		}
 	}
 	return ""
+}
+
+// ensureScriptCRLF 修正批处理脚本行尾
+//
+// MAS 启动时会执行 findstr /v "$" 自检，只要存在 LF 行尾或末尾没有换行，
+// 就会打印 "Script either has LF line ending issue..." 并直接退出。
+// 仓库/发布链路可能把 CRLF 归一化成 LF，这里在运行前自动修复。
+func ensureScriptCRLF(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+
+	needsFix := false
+	for i := 0; i < len(data); i++ {
+		if data[i] == '\n' && (i == 0 || data[i-1] != '\r') {
+			needsFix = true
+			break
+		}
+	}
+	if !needsFix && bytes.HasSuffix(data, []byte("\r\n")) {
+		return
+	}
+
+	fixed := make([]byte, 0, len(data)+len(data)/20)
+	for i := 0; i < len(data); i++ {
+		if data[i] == '\n' && (i == 0 || data[i-1] != '\r') {
+			fixed = append(fixed, '\r', '\n')
+			continue
+		}
+		fixed = append(fixed, data[i])
+	}
+	if !bytes.HasSuffix(fixed, []byte("\r\n")) {
+		fixed = append(fixed, '\r', '\n')
+	}
+
+	if err = os.WriteFile(path, fixed, 0o644); err != nil {
+		logger.Warnf("[Windows激活] 激活脚本行尾修正失败: %v", err)
+		return
+	}
+	logger.Warnf("[Windows激活] 激活脚本行尾不是 CRLF，已自动修正: %s", path)
 }
 
 var masVersionRe = regexp.MustCompile(`(?i)set\s+masver=([0-9][0-9.]*)`)

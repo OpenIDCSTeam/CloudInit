@@ -166,20 +166,39 @@ func waitServiceStopped(service *mgr.Service, timeout time.Duration) bool {
 	return false
 }
 
-// uninstallVMwareTools 执行静默卸载，返回是否成功与最后返回码
+// uninstallVMwareTools 执行静默卸载，返回是否成功与失败返回码
 func uninstallVMwareTools(productCode string) (bool, int) {
-	lastCode := 0
+	lastError := 0
 
-	// 1. MSI 静默卸载
-	if productCode != "" {
-		lastCode = runShellWithTimeout(
-			fmt.Sprintf(`msiexec /x %s /qn /norestart REBOOT=ReallySuppress`, productCode),
-			300*time.Second,
-		)
-		if isUninstallSuccess(lastCode) {
-			return true, lastCode
+	record := func(code int) {
+		if code != 0 && lastError == 0 {
+			lastError = code
 		}
-		logger.Warnf("[VMTools管理] msiexec 卸载返回码: %d", lastCode)
+	}
+
+	msiCommand := ""
+	if productCode != "" {
+		msiCommand = fmt.Sprintf(`msiexec /x %s /qn /norestart REBOOT=ReallySuppress`, productCode)
+	}
+
+	// 1. MSI 静默卸载（1603 常见于服务/文件未完全释放，等待后重试一次）
+	if msiCommand != "" {
+		code := runShellWithTimeout(msiCommand, 300*time.Second)
+		if isUninstallSuccess(code) {
+			return true, code
+		}
+		logger.Warnf("[VMTools管理] msiexec 卸载返回码: %d", code)
+		record(code)
+
+		if code == 1603 {
+			time.Sleep(5 * time.Second)
+			code = runShellWithTimeout(msiCommand, 300*time.Second)
+			if isUninstallSuccess(code) {
+				return true, code
+			}
+			logger.Warnf("[VMTools管理] msiexec 重试返回码: %d", code)
+			record(code)
+		}
 	}
 
 	// 2. 官方卸载程序兜底
@@ -190,30 +209,36 @@ func uninstallVMwareTools(productCode string) (bool, int) {
 		if _, err := os.Stat(path); err != nil {
 			continue
 		}
-		lastCode = runShellWithTimeout(fmt.Sprintf(`"%s" /S`, path), 300*time.Second)
-		if isUninstallSuccess(lastCode) {
-			return true, lastCode
+		code := runShellWithTimeout(fmt.Sprintf(`"%s" /S`, path), 300*time.Second)
+		if isUninstallSuccess(code) {
+			return true, code
 		}
-		logger.Warnf("[VMTools管理] 卸载程序 %s 返回码: %d", path, lastCode)
+		logger.Warnf("[VMTools管理] 卸载程序 %s 返回码: %d", path, code)
+		record(code)
 	}
 
 	// 3. WMI 兜底
-	lastCode = runShellWithTimeout(
+	code := runShellWithTimeout(
 		`wmic product where "name like 'VMware Tools%'" call uninstall /nointeractive`,
 		300*time.Second,
 	)
 	if !vmwareToolsInstalled() {
-		return true, lastCode
+		return true, code
 	}
+	record(code)
 
 	// 4. PowerShell CIM 兜底
-	lastCode = runShellWithTimeout(
+	code = runShellWithTimeout(
 		`powershell -NoProfile -Command "Get-CimInstance Win32_Product | `+
 			`Where-Object {$_.Name -like 'VMware Tools*'} | Invoke-CimMethod -MethodName Uninstall"`,
 		300*time.Second,
 	)
+	if !vmwareToolsInstalled() {
+		return true, code
+	}
+	record(code)
 
-	return !vmwareToolsInstalled(), lastCode
+	return false, lastError
 }
 
 // runShellWithTimeout 以 shell 方式执行命令，返回退出码（超时返回 -1）

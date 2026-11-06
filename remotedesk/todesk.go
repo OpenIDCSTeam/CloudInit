@@ -8,6 +8,7 @@ package remotedesk
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,15 +39,26 @@ type ToDeskInfo struct {
 
 // ToDeskManager ToDesk远程桌面管理器
 type ToDeskManager struct {
-	mu              sync.Mutex
-	deviceCode      string // 设备代码
-	tempPassword    string // 临时密码
-	running         int32
-	done            chan struct{}
-	refreshInterval int // 定期刷新间隔（秒）
-	toDeskDir       string
-	dumpExe         string
+	mu               sync.Mutex
+	deviceCode       string // 设备代码
+	tempPassword     string // 临时密码
+	running          int32
+	done             chan struct{}
+	refreshInterval  int // 定期刷新间隔（秒）
+	toDeskDir        string
+	dumpExe          string
+	lastStartAttempt time.Time // 上次尝试启动 ToDesk 的时间
 }
+
+const (
+	// toDeskFetchAttempts 单次刷新内的最大尝试次数（内存读取存在偶发失败）
+	toDeskFetchAttempts = 3
+	// toDeskRestartWindow 自动拉起 ToDesk 的最小间隔
+	toDeskRestartWindow = 10 * time.Minute
+)
+
+// errNoOutput 工具无输出
+var errNoOutput = errors.New("ToDeskSunDump.exe无输出")
 
 // New 创建 ToDesk 管理器
 func New() *ToDeskManager {
@@ -102,8 +114,12 @@ func (m *ToDeskManager) GetToDeskInfo() *ToDeskInfo {
 	return nil
 }
 
-// startToDesk 启动ToDesk.exe（通过start命令启动，不阻塞主进程），启动后隐藏主窗口
+// startToDesk 启动ToDesk.exe（不阻塞主进程），启动后隐藏主窗口
 func (m *ToDeskManager) startToDesk() {
+	m.mu.Lock()
+	m.lastStartAttempt = time.Now()
+	m.mu.Unlock()
+
 	toDeskExe := filepath.Join(m.toDeskDir, "ToDesk.exe")
 	if _, err := os.Stat(toDeskExe); err != nil {
 		logger.Warnf("[ToDesk] ToDesk.exe不存在: %s", toDeskExe)
@@ -152,12 +168,71 @@ func (m *ToDeskManager) refreshLoop() {
 }
 
 // fetchToDeskInfo 执行ToDeskSunDump.exe -a 获取设备代码和临时密码
+//
+// 内存读取存在偶发失败，单次失败不再直接丢弃：最多重试 3 次，
+// 设备代码与临时密码分别更新（只拿到一部分时保留另一部分的旧值）。
 func (m *ToDeskManager) fetchToDeskInfo() {
 	if _, err := os.Stat(m.dumpExe); err != nil {
 		logger.Warnf("[ToDesk] ToDeskSunDump.exe不存在: %s", m.dumpExe)
 		return
 	}
 
+	var (
+		lastOutput  string
+		foundCode   string
+		foundPass   string
+		processGone bool
+	)
+
+	for attempt := 1; attempt <= toDeskFetchAttempts; attempt++ {
+		output, err := m.dumpOnce()
+		if err != nil {
+			lastOutput = output
+			if attempt < toDeskFetchAttempts {
+				time.Sleep(time.Second)
+			}
+			continue
+		}
+
+		code, pass := parseToDeskOutput(output)
+		if code != "" {
+			foundCode = code
+		}
+		if pass != "" {
+			foundPass = pass
+		}
+		if strings.Contains(output, "未找到ToDesk进程") {
+			processGone = true
+		}
+
+		lastOutput = output
+		if foundCode != "" && foundPass != "" {
+			break
+		}
+		if attempt < toDeskFetchAttempts {
+			time.Sleep(time.Second)
+		}
+	}
+
+	// ToDesk 进程不在时尝试拉起（避免内存读取永远失败）
+	if processGone {
+		m.restartToDeskIfNeeded()
+	}
+
+	if foundCode == "" && foundPass == "" {
+		logger.Warnf("[ToDesk] 未能从输出中解析到设备代码或临时密码")
+		logger.Debugf("[ToDesk] 原始输出:\n%s", lastOutput)
+		return
+	}
+
+	m.applyToDeskInfo(foundCode, foundPass)
+	if foundCode == "" || foundPass == "" {
+		logger.Debugf("[ToDesk] 本次仅获取到部分信息（设备代码=%q 临时密码=%q）", foundCode, foundPass)
+	}
+}
+
+// dumpOnce 执行一次 ToDeskSunDump.exe，返回解码后的输出
+func (m *ToDeskManager) dumpOnce() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -168,26 +243,29 @@ func (m *ToDeskManager) fetchToDeskInfo() {
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			logger.Errorf("[ToDesk] ToDeskSunDump.exe执行超时")
-			return
+			return "", err
 		}
 
 		var exitErr *exec.ExitError
 		if ok := asExitError(err, &exitErr); ok {
 			logger.Warnf("[ToDesk] ToDeskSunDump.exe执行失败，返回码: %d", exitErr.ExitCode())
-			return
+			return "", err
 		}
 
 		logger.Errorf("[ToDesk] 执行ToDeskSunDump.exe异常: %v", err)
-		return
+		return "", err
 	}
 
 	output := decodeOutput(raw)
 	if output == "" {
 		logger.Warnf("[ToDesk] ToDeskSunDump.exe无输出")
-		return
+		return "", errNoOutput
 	}
+	return output, nil
+}
 
-	// 解析输出，提取设备代码和临时密码
+// parseToDeskOutput 从输出中解析设备代码和临时密码
+func parseToDeskOutput(output string) (string, string) {
 	deviceCode := ""
 	tempPassword := ""
 
@@ -203,16 +281,36 @@ func (m *ToDeskManager) fetchToDeskInfo() {
 		}
 	}
 
-	if deviceCode != "" && tempPassword != "" {
-		m.mu.Lock()
+	return deviceCode, tempPassword
+}
+
+// applyToDeskInfo 更新设备代码与临时密码（分别更新，允许只更新一部分）
+func (m *ToDeskManager) applyToDeskInfo(deviceCode, tempPassword string) {
+	m.mu.Lock()
+	if deviceCode != "" {
 		m.deviceCode = deviceCode
-		m.tempPassword = tempPassword
-		m.mu.Unlock()
-		logger.Infof("[ToDesk] 设备代码: %s | 临时密码: %s", deviceCode, tempPassword)
-	} else {
-		logger.Warnf("[ToDesk] 未能从输出中解析到设备代码或临时密码")
-		logger.Debugf("[ToDesk] 原始输出:\n%s", output)
 	}
+	if tempPassword != "" {
+		m.tempPassword = tempPassword
+	}
+	currentCode, currentPass := m.deviceCode, m.tempPassword
+	m.mu.Unlock()
+
+	logger.Infof("[ToDesk] 设备代码: %s | 临时密码: %s", currentCode, currentPass)
+}
+
+// restartToDeskIfNeeded 在检测到 ToDesk 进程缺失时尝试重新启动（限频）
+func (m *ToDeskManager) restartToDeskIfNeeded() {
+	m.mu.Lock()
+	if time.Since(m.lastStartAttempt) < toDeskRestartWindow {
+		m.mu.Unlock()
+		return
+	}
+	m.lastStartAttempt = time.Now()
+	m.mu.Unlock()
+
+	logger.Warnf("[ToDesk] 检测到ToDesk进程未运行，尝试重新启动")
+	m.startToDesk()
 }
 
 // decodeOutput 优先UTF-8，失败则尝试GBK，均失败则替换错误字符
