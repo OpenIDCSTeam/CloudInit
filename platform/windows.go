@@ -214,21 +214,22 @@ func (p *windowsPlatform) ActivateWindows() {
 }
 
 func (p *windowsPlatform) doActivateWindows() {
+	// 检查是否已激活（先判断，避免为了等待脚本白白阻塞）
+	if p.windowsActivated() {
+		logger.Infof("[Windows激活] 系统已永久激活，跳过")
+		return
+	}
+
 	// 激活脚本默认位于 tool 目录，兼容老版本放在程序根目录的情况
-	masaioPath := locateMASAIO()
+	// 首次部署/老客户端升级时脚本可能还在自动下载，这里等待一段时间
+	masaioPath := locateMASAIO(10 * time.Minute)
 	if masaioPath == "" {
-		logger.Warnf("[Windows激活] 激活脚本不存在（已检查 tool 目录与程序目录）")
+		logger.Warnf("[Windows激活] 激活脚本不存在（已检查 tool 目录与程序目录），本次跳过激活")
 		return
 	}
 
 	// MAS 会自检行尾：必须是 CRLF 且文件末尾有换行，否则直接退出
 	ensureScriptCRLF(masaioPath)
-
-	// 检查是否已激活
-	if p.windowsActivated() {
-		logger.Infof("[Windows激活] 系统已永久激活，跳过")
-		return
-	}
 
 	// 根据Windows版本选择激活方式
 	winVer := WindowsVersion()
@@ -304,17 +305,28 @@ func (p *windowsPlatform) runActivation(masaioPath, activateParam, methodName, m
 }
 
 // locateMASAIO 查找激活脚本：优先 tool 目录，其次程序根目录
-func locateMASAIO() string {
+//
+// 脚本不存在时会等待工具自动下载（首次部署、老客户端升级场景），
+// 最多等待 timeout，期间每 10 秒重试一次。
+func locateMASAIO(timeout time.Duration) string {
 	candidates := []string{
 		filepath.Join(apppath.ToolDir(), "MASAIO.cmd"),
 		filepath.Join(apppath.BaseDir(), "MASAIO.cmd"),
 	}
-	for _, path := range candidates {
-		if _, err := os.Stat(path); err == nil {
-			return path
+
+	deadline := time.Now().Add(timeout)
+	for {
+		for _, path := range candidates {
+			if _, err := os.Stat(path); err == nil {
+				return path
+			}
 		}
+
+		if time.Now().After(deadline) {
+			return ""
+		}
+		time.Sleep(10 * time.Second)
 	}
-	return ""
 }
 
 // ensureScriptCRLF 修正批处理脚本行尾

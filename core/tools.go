@@ -142,9 +142,14 @@ func (a *AutoUpdate) syncToolsTo(toolDir string, release map[string]interface{})
 			continue
 		}
 
+		targetPath := filepath.Join(toolDir, tool.Name)
+
+		// 本地文件缺失（从未部署/被删除）时无视版本记录重新下载
 		local := versions[tool.Name]
-		if local != "" && !isNewerVersion(tool.Version, local) {
-			continue
+		if _, statErr := os.Stat(targetPath); statErr == nil {
+			if local != "" && !isNewerVersion(tool.Version, local) {
+				continue
+			}
 		}
 
 		asset := findAssetByName(assets, tool.Asset)
@@ -153,7 +158,6 @@ func (a *AutoUpdate) syncToolsTo(toolDir string, release map[string]interface{})
 			continue
 		}
 
-		targetPath := filepath.Join(toolDir, tool.Name)
 		tempPath := targetPath + ".download"
 
 		if !a.downloadWithProxy(mapString(asset, "browser_download_url"), tempPath) {
