@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -83,7 +84,17 @@ func NewCloudInitService() *CloudInitService {
 		cmdExecutor:   core.NewCmdExecutor(),
 		rdpManager:    remotedesk.New(),
 		masterTargets: map[string]string{},
-		client:        &http.Client{},
+		client:        newReportClient(),
+	}
+}
+
+// newReportClient 构造上报专用客户端
+// 上报走内网直连，明确禁用系统代理（HTTP_PROXY/HTTPS_PROXY），
+// 否则探测子网地址时可能被代理劫持，误判为找到主控。
+func newReportClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{Proxy: nil},
+		Timeout:   0, // 由每次请求的 context 控制超时
 	}
 }
 
@@ -113,7 +124,9 @@ func (s *CloudInitService) Start() {
 		}
 	})
 
-	safeRun("磁盘扩容启动失败（不影响主服务）", func() {
+	// 磁盘扩容、VMware Tools 卸载都可能耗时数分钟（msiexec/diskpart），
+	// 必须放到后台执行，否则会卡住主循环导致「不上报」
+	go safeRun("磁盘扩容异常（不影响主服务）", func() {
 		s.diskExtend.Extend()
 	})
 
@@ -123,7 +136,7 @@ func (s *CloudInitService) Start() {
 	})
 
 	// 非VMware环境下卸载VMware Tools（仅Windows平台）
-	safeRun("VMTools检测启动失败（不影响主服务）", func() {
+	go safeRun("VMTools检测异常（不影响主服务）", func() {
 		if handler, ok := s.platform.(platform.VMToolsHandler); ok {
 			handler.UninstallVMToolsIfNotVMware()
 		}
@@ -184,6 +197,13 @@ func (s *CloudInitService) mainLoop() {
 		return
 	}
 
+	logger.Infof("[上报] 主循环已启动，间隔 %ds，网卡数 %d",
+		config.Cfg.ReportInterval, len(nicManager.NICList))
+	for _, nicConfig := range nicManager.NICList {
+		logger.Infof("[上报] 网卡 %s | IP: %s | 网关: %s",
+			nicConfig.MacAddr, nicConfig.Ip4Addr, nicConfig.Ip4Gate)
+	}
+
 	for atomic.LoadInt32(&s.running) == 1 {
 		time.Sleep(time.Second)
 		now := time.Now()
@@ -214,16 +234,16 @@ func (s *CloudInitService) mainLoop() {
 			if mac := firstValidMAC(nicManager); mac != "" {
 				url += "?nic=" + mac
 			}
-			s.reportStatus(url, statusData, 5*time.Second, false)
+			s.reportStatus(url, statusData, 5*time.Second, false, true)
 		} else {
-			// 自动从网卡网关推算上报地址：在子网内遍历，直到找到主控
+			// 自动从网卡网关推算上报地址：在子网内并发探测，直到找到主控
 			// 同一子网只探测一次，避免多网卡重复扫描
 			resolved := map[string]string{}
+			attempted := 0
+			reported := ""
+
 			for _, nicConfig := range nicManager.NICList {
-				if nicConfig.MacAddr == zeroMAC {
-					continue
-				}
-				if nicConfig.Ip4Gate == "" || !strings.HasSuffix(nicConfig.Ip4Gate, ".1") {
+				if nicConfig.MacAddr == zeroMAC || !isIPv4Literal(nicConfig.Ip4Gate) {
 					continue
 				}
 
@@ -232,19 +252,30 @@ func (s *CloudInitService) mainLoop() {
 					continue
 				}
 
+				attempted++
 				targetIP, ok := resolved[prefix]
 				if !ok {
-					// 首次遇到该子网：遍历候选地址并顺带完成本网卡上报
+					// 首次遇到该子网：探测并完成本网卡上报
 					targetIP = s.reportViaNIC(nicConfig, prefix, statusData)
 					resolved[prefix] = targetIP
+					if targetIP != "" {
+						reported = targetIP
+					}
 					continue
 				}
 
 				// 同一子网的其它网卡：直接上报到已找到的主控
 				if targetIP != "" {
 					url := buildReportURL(targetIP, nicConfig.MacAddr)
-					s.reportStatus(url, statusData, 5*time.Second, true)
+					s.reportStatus(url, statusData, 5*time.Second, true, true)
+					reported = targetIP
 				}
+			}
+
+			if attempted == 0 {
+				logger.Warnf("[上报] 没有可用网关的网卡，本轮不上报（请检查网卡与路由表）")
+			} else if reported != "" {
+				logger.Infof("[上报] 状态已上报（主控 %s）", reported)
 			}
 		}
 
@@ -252,37 +283,104 @@ func (s *CloudInitService) mainLoop() {
 	}
 }
 
-// reportViaNIC 在网卡所在子网内遍历候选地址，直到找到主控并完成上报
+// reportViaNIC 在网卡所在子网内探测主控并完成上报
 // 返回找到的主控IP，未找到时返回空字符串
 func (s *CloudInitService) reportViaNIC(nicConfig *nic.NCConfig, prefix string, data *statusPayload) string {
 	candidates := masterCandidates(prefix, config.Cfg.GatewayOffset)
 
-	// 优先使用上次成功的主控地址，避免每轮都全网扫描
+	// 优先使用上次成功的主控地址，命中则直接上报，避免每轮重新扫描
 	if lastTarget := s.masterTargets[prefix]; lastTarget != "" {
-		candidates = moveToFront(candidates, lastTarget)
+		url := buildReportURL(lastTarget, nicConfig.MacAddr)
+		if s.reportStatus(url, data, 5*time.Second, true, true) {
+			return lastTarget
+		}
+		candidates = removeCandidate(candidates, lastTarget)
 	}
 
-	for index, targetIP := range candidates {
-		// 首个候选（缓存/默认偏移）给足超时；扫描其余地址时用短超时，避免长时间阻塞
-		timeout := time.Second
-		if index == 0 {
-			timeout = 5 * time.Second
-		}
+	// 并发探测（只探测，不处理响应），找到主控后再正式上报一次
+	targetIP := s.probeInParallel(candidates, nicConfig.MacAddr, data)
+	if targetIP == "" {
+		delete(s.masterTargets, prefix)
+		logger.Warnf("[上报] 网卡 %s 所在子网 %s* 未找到主控，本轮不上报",
+			nicConfig.MacAddr, prefix)
+		return ""
+	}
 
-		url := buildReportURL(targetIP, nicConfig.MacAddr)
-		if s.reportStatus(url, data, timeout, true) {
-			if s.masterTargets[prefix] != targetIP {
-				logger.Infof("[上报] 子网 %s* 找到主控: %s", prefix, targetIP)
-				s.masterTargets[prefix] = targetIP
+	if s.masterTargets[prefix] != targetIP {
+		logger.Infof("[上报] 子网 %s* 找到主控: %s", prefix, targetIP)
+		s.masterTargets[prefix] = targetIP
+	}
+
+	url := buildReportURL(targetIP, nicConfig.MacAddr)
+	if !s.reportStatus(url, data, 5*time.Second, false, true) {
+		logger.Warnf("[上报] 向主控 %s 上报失败", targetIP)
+	}
+
+	return targetIP
+}
+
+// probeInParallel 并发探测候选地址，返回第一个响应主控的 IP
+func (s *CloudInitService) probeInParallel(candidates []string, mac string, data *statusPayload) string {
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	const (
+		probeWorkers = 32
+		probeTimeout = 900 * time.Millisecond
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	jobs := make(chan string)
+	result := make(chan string, 1)
+
+	workerCount := probeWorkers
+	if len(candidates) < workerCount {
+		workerCount = len(candidates)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for ip := range jobs {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
+				// 探测阶段不处理响应，避免多个响应重复触发指令
+				if s.reportStatus(buildReportURL(ip, mac), data, probeTimeout, true, false) {
+					select {
+					case result <- ip:
+					default:
+					}
+					cancel()
+					return
+				}
 			}
-			return targetIP
-		}
+		}()
 	}
 
-	delete(s.masterTargets, prefix)
-	logger.Warnf("[上报] 网卡 %s 所在子网 %s* 未找到主控，本轮不上报",
-		nicConfig.MacAddr, prefix)
-	return ""
+	go func() {
+		defer close(jobs)
+		for _, ip := range candidates {
+			select {
+			case <-ctx.Done():
+				return
+			case jobs <- ip:
+			}
+		}
+	}()
+
+	wg.Wait()
+	close(result)
+
+	return <-result
 }
 
 // buildReportURL 构造上报地址
@@ -300,6 +398,39 @@ func firstValidMAC(nicManager *nic.NCManage) string {
 		return nicConfig.MacAddr
 	}
 	return ""
+}
+
+// isIPv4Literal 判断是否为合法的点分十进制 IPv4
+func isIPv4Literal(value string) bool {
+	parts := strings.Split(value, ".")
+	if len(parts) != 4 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || len(part) > 3 {
+			return false
+		}
+		for _, ch := range part {
+			if ch < '0' || ch > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// removeCandidate 从候选列表中移除指定地址
+func removeCandidate(candidates []string, value string) []string {
+	for index, item := range candidates {
+		if item != value {
+			continue
+		}
+		result := make([]string, 0, len(candidates)-1)
+		result = append(result, candidates[:index]...)
+		result = append(result, candidates[index+1:]...)
+		return result
+	}
+	return candidates
 }
 
 // subnetPrefix 提取网关所在子网前缀，如 192.168.1.
@@ -378,7 +509,8 @@ func (s *CloudInitService) calcNetworkDelta() {
 
 // reportStatus 上报状态到宿主机，并处理返回的控制指令
 // 返回 true 表示该地址上有主控应答（HTTP 200 且响应可解析）
-func (s *CloudInitService) reportStatus(url string, data *statusPayload, timeout time.Duration, quiet bool) bool {
+// handle=false 时只探测不处理响应，用于并发扫描阶段
+func (s *CloudInitService) reportStatus(url string, data *statusPayload, timeout time.Duration, quiet, handle bool) bool {
 	body, err := json.Marshal(data)
 	if err != nil {
 		logger.Errorf("上报异常: %v", err)
@@ -400,9 +532,9 @@ func (s *CloudInitService) reportStatus(url string, data *statusPayload, timeout
 		if quiet {
 			logger.Debugf("上报失败: %s (%v)", url, err)
 		} else if ctx.Err() == context.DeadlineExceeded {
-			logger.Debugf("上报超时: %s", url)
+			logger.Warnf("上报超时: %s", url)
 		} else if isConnectionError(err) {
-			logger.Debugf("上报连接失败: %s", url)
+			logger.Warnf("上报连接失败: %s", url)
 		} else {
 			logger.Errorf("上报异常: %v", err)
 		}
@@ -417,9 +549,10 @@ func (s *CloudInitService) reportStatus(url string, data *statusPayload, timeout
 	}
 
 	var response struct {
-		Code int                    `json:"code"`
-		Msg  string                 `json:"msg"`
-		Data map[string]interface{} `json:"data"`
+		Code      int                    `json:"code"`
+		Msg       string                 `json:"msg"`
+		Data      map[string]interface{} `json:"data"`
+		Timestamp int64                  `json:"timestamp"`
 	}
 	if err = json.Unmarshal(raw, &response); err != nil {
 		// 不是主控的协议响应，继续扫描其它地址
@@ -431,9 +564,24 @@ func (s *CloudInitService) reportStatus(url string, data *statusPayload, timeout
 		return false
 	}
 
+	// 主控响应固定带 timestamp（Python/Go 两版都如此）：
+	// 借此区分防火墙/透明代理返回的普通 JSON，避免误判为主控
+	if response.Code == 0 || response.Timestamp == 0 {
+		if quiet {
+			logger.Debugf("上报响应缺少主控标识: %s", url)
+		} else {
+			logger.Warnf("上报响应不是主控协议（HTTP %d）: %s", resp.StatusCode, url)
+		}
+		return false
+	}
+
 	if resp.StatusCode != 200 {
 		// 主控已应答（协议匹配），不再继续扫描；错误信息对排查很关键
 		logger.Warnf("[上报] 主控返回 HTTP %d: %s", resp.StatusCode, response.Msg)
+		return true
+	}
+
+	if !handle {
 		return true
 	}
 
