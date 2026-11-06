@@ -18,10 +18,11 @@ type HWStatus struct {
 	// 网络信息
 	FluTotal int `json:"flu_total"`
 	FluUsage int `json:"flu_usage"`
-	NatTotal int `json:"nat_total"`
-	NatUsage int `json:"nat_usage"`
-	WebTotal int `json:"web_total"`
-	WebUsage int `json:"web_usage"`
+	// 以下字段宿主机上报接口不支持（会被判为非法字段），不参与上报序列化
+	NatTotal int `json:"-"`
+	NatUsage int `json:"-"`
+	WebTotal int `json:"-"`
+	WebUsage int `json:"-"`
 
 	// 其他信息
 	GpuUsage map[string]int `json:"gpu_usage"`
@@ -32,9 +33,9 @@ type HWStatus struct {
 	CPUHeats int            `json:"cpu_heats"`
 	CPUPower int            `json:"cpu_power"`
 
-	// 虚拟机信息
-	VMName string `json:"vm_name"`
-	VMPass string `json:"vm_pass"`
+	// 虚拟机信息（由宿主机下发，不上报）
+	VMName string `json:"-"`
+	VMPass string `json:"-"`
 }
 
 // NewHWStatus 创建带默认值的硬件状态

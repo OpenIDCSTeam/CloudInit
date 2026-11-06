@@ -206,8 +206,12 @@ func (s *CloudInitService) mainLoop() {
 		// 确定上报目标并发送
 		if config.Cfg.ReportHost != "" {
 			// 使用固定配置的上报地址
+			// 宿主机接口要求 nic 参数为合法 MAC，否则直接返回 400
 			url := fmt.Sprintf("http://%s:%d%s",
 				config.Cfg.ReportHost, config.Cfg.ReportPort, config.Cfg.ReportPath)
+			if mac := firstValidMAC(nicManager); mac != "" {
+				url += "?nic=" + mac
+			}
 			s.reportStatus(url, statusData, 5*time.Second, false)
 		} else {
 			// 自动从网卡网关推算上报地址：在子网内遍历，直到找到主控
@@ -283,6 +287,17 @@ func (s *CloudInitService) reportViaNIC(nicConfig *nic.NCConfig, prefix string, 
 func buildReportURL(targetIP, mac string) string {
 	return fmt.Sprintf("http://%s:%d%s?nic=%s",
 		targetIP, config.Cfg.ReportPort, config.Cfg.ReportPath, mac)
+}
+
+// firstValidMAC 返回第一个有效网卡 MAC（宿主机上报接口强校验该参数）
+func firstValidMAC(nicManager *nic.NCManage) string {
+	for _, nicConfig := range nicManager.NICList {
+		if nicConfig.MacAddr == "" || nicConfig.MacAddr == zeroMAC {
+			continue
+		}
+		return nicConfig.MacAddr
+	}
+	return ""
 }
 
 // subnetPrefix 提取网关所在子网前缀，如 192.168.1.
@@ -393,15 +408,6 @@ func (s *CloudInitService) reportStatus(url string, data *statusPayload, timeout
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		if quiet {
-			logger.Debugf("上报失败 [%s] HTTP %d", url, resp.StatusCode)
-		} else {
-			logger.Warnf("上报失败 [%s] HTTP %d", url, resp.StatusCode)
-		}
-		return false
-	}
-
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Errorf("上报异常: %v", err)
@@ -409,15 +415,24 @@ func (s *CloudInitService) reportStatus(url string, data *statusPayload, timeout
 	}
 
 	var response struct {
+		Code int                    `json:"code"`
+		Msg  string                 `json:"msg"`
 		Data map[string]interface{} `json:"data"`
 	}
 	if err = json.Unmarshal(raw, &response); err != nil {
+		// 不是主控的协议响应，继续扫描其它地址
 		if quiet {
 			logger.Debugf("上报响应非主控格式: %s (%v)", url, err)
 		} else {
 			logger.Errorf("上报异常: %v", err)
 		}
 		return false
+	}
+
+	if resp.StatusCode != 200 {
+		// 主控已应答（协议匹配），不再继续扫描；错误信息对排查很关键
+		logger.Warnf("[上报] 主控返回 HTTP %d: %s", resp.StatusCode, response.Msg)
+		return true
 	}
 
 	vmData := response.Data
