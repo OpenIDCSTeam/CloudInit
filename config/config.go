@@ -32,6 +32,11 @@ type Config struct {
 	UpdateRepo     string // Release API 地址
 	MirrorURL      string // 镜像站地址（EdgeOne），留空则只走 GitHub
 
+	// [system] 系统初始化
+	VirtioEnabled bool   // 是否自动检测 KVM 平台并安装 virtio 驱动
+	VirtioURLX64  string // virtio 驱动包地址（x64）
+	VirtioURLX86  string // virtio 驱动包地址（x86）
+
 	// [log] 日志相关
 	LogLevel     string // 日志级别
 	LogRetention string // 日志保留时间
@@ -57,6 +62,10 @@ func newConfig() *Config {
 		UpdateInterval: 86400,
 		UpdateRepo:     "https://api.github.com/repos/OpenIDCSTeam/CloudInit/releases/latest",
 		MirrorURL:      "https://eo-idc.pika.net.cn/cloudinit",
+
+		VirtioEnabled: true,
+		VirtioURLX64:  "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.302-1/virtio-win-gt-x64.msi",
+		VirtioURLX86:  "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.302-1/virtio-win-gt-x86.msi",
 
 		LogLevel:     "INFO",
 		LogRetention: "7 days",
@@ -125,6 +134,22 @@ func (c *Config) apply(sections map[string]map[string]string) error {
 		}
 		if v, ok2 := u["mirror_url"]; ok2 {
 			c.MirrorURL = v
+		}
+	}
+
+	if s, ok := sections["system"]; ok {
+		if v, ok2 := s["virtio_enabled"]; ok2 {
+			b, err := parseBool(v)
+			if err != nil {
+				return err
+			}
+			c.VirtioEnabled = b
+		}
+		if v, ok2 := s["virtio_url_x64"]; ok2 {
+			c.VirtioURLX64 = v
+		}
+		if v, ok2 := s["virtio_url_x86"]; ok2 {
+			c.VirtioURLX86 = v
 		}
 	}
 

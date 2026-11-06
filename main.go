@@ -136,6 +136,13 @@ func (s *CloudInitService) Start() {
 		}
 	})
 
+	// 异步检测 KVM 平台并安装 virtio 驱动（仅Windows平台）
+	safeRun("virtio驱动安装启动失败（不影响主服务）", func() {
+		if installer, ok := s.platform.(platform.VirtioDriverInstaller); ok {
+			installer.InstallVirtioDrivers()
+		}
+	})
+
 	// 进入主循环
 	s.mainLoop()
 }

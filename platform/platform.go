@@ -40,6 +40,11 @@ type WindowsActivator interface {
 	ActivateWindows()
 }
 
+// VirtioDriverInstaller Windows 平台可选的 virtio 驱动安装能力（KVM 虚拟机）
+type VirtioDriverInstaller interface {
+	InstallVirtioDrivers()
+}
+
 // New 根据当前操作系统返回对应的平台实现实例
 func New() (Platform, error) {
 	switch runtime.GOOS {

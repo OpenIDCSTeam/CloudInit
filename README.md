@@ -11,6 +11,7 @@ OpenIDC 虚拟机初始化与状态上报服务。部署在虚拟机内部，负
 - **指令执行** - 接收宿主机下发的关机、重启、改密码、改主机名等控制指令
 - **命令下发** - 接收宿主机下发的远程命令，异步执行并回传结果
 - **VMware Tools 清理** - 非 VMware/ESXi 环境自动停止服务、结束进程并静默卸载（兼容 1063 等服务状态异常）
+- **virtio 驱动安装** - Windows 下自动识别 KVM/QEMU 平台，发现 VirtIO 设备缺少驱动时自动下载并静默安装 virtio-win 驱动包
 - **磁盘扩容** - 启动时自动检测并扩容根分区（支持 ext4/xfs/btrfs/APFS/NTFS）
 - **自动更新** - 后台守护协程每24小时检查更新，优先走 EdgeOne 镜像，失败回退 GitHub
 - **工具更新** - `tool` 目录下的工具按各自版本独立在线更新（含 sha256 校验）
@@ -186,10 +187,28 @@ interval = 86400              # 检查间隔（秒）
 repo_url = https://api.github.com/repos/OpenIDCSTeam/CloudInit/releases/latest
 mirror_url = https://eo-idc.pika.net.cn/cloudinit   # EdgeOne 镜像（优先，留空则只走 GitHub）
 
+[system]
+virtio_enabled = true         # 自动检测 KVM 平台并安装 virtio 驱动
+virtio_url_x64 = https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.302-1/virtio-win-gt-x64.msi
+virtio_url_x86 = https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.302-1/virtio-win-gt-x86.msi
+
 [log]
 level = INFO                  # 日志级别
 retention = 7 days            # 日志保留时间
 ```
+
+## virtio 驱动自动安装
+
+Windows 虚拟机启动后异步执行，不影响主循环与上报：
+
+1. 读取 `HKLM\HARDWARE\DESCRIPTION\System\BIOS`，`SystemManufacturer` / `SystemProductName` / `BIOSVendor` 等字段命中 `QEMU`、`KVM`、`Red Hat`、`oVirt`、`Bochs` 时判定为 KVM 平台；VMware、Hyper-V、VirtualBox 不匹配，直接跳过。
+2. 通过卸载注册表项判断是否已安装 virtio 驱动包（`DisplayName` 含 `VirtIO`），已安装则跳过。
+3. 查询 PnP 设备中的 `VEN_1AF4`（Red Hat VirtIO）：没有该设备说明未使用 virtio，跳过；设备 `ConfigManagerErrorCode != 0` 或状态非 `OK` 说明缺驱动，才进入安装流程。
+4. 按架构下载 `virtio-win-gt-x64.msi` / `virtio-win-gt-x86.msi`（arm64 暂不支持），缓存到 `tool/virtio-win-gt-<arch>.msi`，重复启动直接复用。
+5. `msiexec /i ... /qn /norestart` 静默安装，返回 `0`/`3010`/`1638` 视为成功；失败后 6 小时内不再重试，避免每次启动重复下载。
+6. 安装完成后部分设备需重启生效。
+
+> 若虚拟机使用 virtio 网卡且完全没有网络，需先把驱动包放到 `tool/` 或改 `virtio_url_*` 指向内网镜像（本地已存在且大于 1MB 时会直接复用，不再下载）。
 
 ## 工具目录与工具更新
 
