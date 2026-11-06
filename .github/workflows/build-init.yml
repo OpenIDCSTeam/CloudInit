@@ -63,6 +63,25 @@ jobs:
         path: dist-artifact/
         retention-days: 30
 
+  # 脚本语法检查（安装脚本出错会直接影响线上部署）
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Check shell scripts
+      run: |
+        sh -n scripts/install.sh
+        sh -n scripts/sync_edgeone.sh
+
+    - name: Check PowerShell script
+      shell: pwsh
+      run: |
+        $errors = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile("scripts/install.ps1", [ref]$null, [ref]$errors)
+        if ($errors) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }
+
   # 打包工具（MASAIO.cmd / ToDeskSunDump.exe），版本取自 tool/tools.json
   tools:
     runs-on: ubuntu-latest
@@ -120,7 +139,7 @@ jobs:
 
   # Push 自动发布到 beta release
   release-beta:
-    needs: [ build, tools ]
+    needs: [ build, tools, lint ]
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
 
@@ -185,7 +204,7 @@ jobs:
 
   # 手动触发发布正式版本
   release-stable:
-    needs: [ build, tools ]
+    needs: [ build, tools, lint ]
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch'
 
@@ -242,7 +261,7 @@ jobs:
 
   # 正式版本同步到 EdgeOne 镜像站（eo-idc.pika.net.cn）
   sync-edgeone:
-    needs: [ build, tools ]
+    needs: [ build, tools, lint ]
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch'
 
