@@ -2,6 +2,7 @@
 package core
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -47,13 +48,40 @@ func (v *VMManage) GetConfig(key string) string {
 }
 
 // Manage 触发虚拟机配置（非阻塞）
+//
+// 两个幂等约束：
+//  1. 主机名：每次开机只尝试修改一次（改完需重启才生效，重复改没有意义）；
+//  2. 密码：只有上游下发的密码与上次设置的**加盐哈希**不一致时才修改。
 func (v *VMManage) Manage() {
 	v.mu.Lock()
 	vmUUID := v.vmConfig["vm_uuid"]
 	vmPass := v.vmConfig["vm_pass"]
 	v.mu.Unlock()
 
-	if vmUUID == "" || vmPass == "" {
+	if vmUUID == "" {
+		return
+	}
+
+	state := loadState()
+	bootID := currentBootID()
+
+	// 开机后首次上报：允许修改一次主机名
+	needHostname := false
+	if state.BootID != bootID {
+		state.BootID = bootID
+		current := strings.TrimSpace(v.platform.GetHostname())
+		needHostname = !strings.EqualFold(current, vmUUID)
+		state.Hostname = vmUUID
+		saveState(state)
+
+		if !needHostname {
+			logger.Debugf("[VM配置] 主机名已一致(%s)，本次开机不再修改", vmUUID)
+		}
+	}
+
+	needPassword := vmPass != "" && config.Cfg.PasswordChangeEnabled && !state.passwordMatches(vmPass)
+
+	if !needHostname && !needPassword {
 		return
 	}
 
@@ -63,25 +91,31 @@ func (v *VMManage) Manage() {
 		return
 	}
 
-	go v.doManage(vmUUID, vmPass)
+	go v.doManage(vmUUID, vmPass, needHostname, needPassword)
 }
 
 // doManage 实际执行配置（后台协程）
-func (v *VMManage) doManage(vmUUID, vmPass string) {
+func (v *VMManage) doManage(vmUUID, vmPass string, needHostname, needPassword bool) {
 	defer atomic.StoreInt32(&v.busy, 0)
 
-	// 设置主机名（包含hosts更新）
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				logger.Errorf("[VM配置] 设置主机名失败: %v", r)
-			}
+	if needHostname {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Errorf("[VM配置] 设置主机名失败: %v", r)
+				}
+			}()
+			logger.Infof("[VM配置] 修改主机名为 %s（重启后生效，本次开机不再重复修改）", vmUUID)
+			v.platform.SetHostname(vmUUID)
 		}()
-		v.platform.SetHostname(vmUUID)
-	}()
+	}
+
+	if !needPassword {
+		return
+	}
 
 	if !config.Cfg.PasswordChangeEnabled {
-		logger.Infof("[VM配置] 已在配置中禁用密码修改，仅更新主机名")
+		logger.Infof("[VM配置] 已在配置中禁用密码修改")
 		return
 	}
 
@@ -104,4 +138,10 @@ func (v *VMManage) doManage(vmUUID, vmPass string) {
 		}()
 		v.platform.SetPassword("user", vmPass)
 	}()
+
+	// 记录已设置的密码哈希（加盐），后续相同密码不再重复修改
+	state := loadState()
+	state.PasswordHash = passwordHash(state.Salt, vmPass)
+	saveState(state)
+	logger.Infof("[VM配置] 已更新系统密码（加密指纹已记录）")
 }

@@ -6,7 +6,8 @@
     "fallback_port": 1880,
     "path": "/api/client/upload",
     "host": "",
-    "gateway_offset": 2
+    "gateway_offset": 2,
+    "scan_subnet": false
   },
   "features": {
     "report": true,

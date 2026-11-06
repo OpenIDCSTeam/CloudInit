@@ -270,7 +270,8 @@ go run .
 | server | `port` | 主控端口，默认 **1881** |
 | server | `fallback_port` | 兜底端口，默认 **1880**（0 表示不启用） |
 | server | `host` | 主控 IP / 域名；留空则取「网关前三段 + gateway_offset」 |
-| server | `gateway_offset` | 网关偏移，默认 2（即 x.x.x.2），不扫描网段 |
+| server | `gateway_offset` | 网关偏移，默认 2（即 x.x.x.2） |
+| server | `scan_subnet` | 固定地址不可达时是否扫描整个网段，**默认 false**；开启后内网主机可能冒充主控，仅在可信环境使用 |
 | features | `password_change` | 是否允许宿主机下发改密 |
 | features | `disk_extend` | 是否自动扩容磁盘 |
 | features | `activation` | 是否自动激活 Windows |

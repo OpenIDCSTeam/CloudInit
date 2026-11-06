@@ -226,7 +226,12 @@ func (s *CloudInitService) mainLoop() {
 	if config.Cfg.ReportHost != "" {
 		logger.Infof("[上报] 目标主控: %s（固定配置）", config.Cfg.ReportHost)
 	} else {
-		logger.Infof("[上报] 目标主控: 网关偏移 +%d（不扫描网段）", config.Cfg.GatewayOffset)
+		logger.Infof("[上报] 目标主控: 网关偏移 +%d", config.Cfg.GatewayOffset)
+	}
+	if config.Cfg.ScanSubnet {
+		logger.Warnf("[上报] scan_subnet 已开启：固定地址不可达时会扫描整个网段，内网主机可能冒充主控，请仅在可信环境使用")
+	} else {
+		logger.Infof("[上报] 网段扫描已关闭（默认）")
 	}
 
 	for atomic.LoadInt32(&s.running) == 1 {
@@ -299,7 +304,56 @@ func (s *CloudInitService) reportOnce(nicManager *nic.NCManage, data *statusPayl
 		return
 	}
 
+	// 网段扫描默认关闭：开启后内网任意主机都可能被当主控，存在被改密的风险
+	if config.Cfg.ScanSubnet {
+		if found := s.scanSubnet(nicManager, mac, data); found != "" {
+			logger.Warnf("[上报] 通过网段扫描找到主控 %s（scan_subnet 已开启）", found)
+			return
+		}
+	}
+
 	logger.Warnf("[上报] 主控 %s:%d 与兜底端口 %d 均不可达", host, port, fallback)
+}
+
+// scanSubnet 顺序扫描网关所在 /24 网段（仅 scan_subnet=true 时启用）
+func (s *CloudInitService) scanSubnet(nicManager *nic.NCManage, mac string, data *statusPayload) string {
+	prefix := firstGatewayPrefix(nicManager)
+	if prefix == "" {
+		return ""
+	}
+
+	port := int(atomic.LoadInt32(&s.activePort))
+	if port <= 0 {
+		port = config.Cfg.ReportPort
+	}
+
+	for last := 1; last <= 254; last++ {
+		ip := prefix + strconv.Itoa(last)
+		url := fmt.Sprintf("http://%s:%d%s?nic=%s", ip, port, config.Cfg.ReportPath, mac)
+
+		// 探测阶段不处理响应，命中后再正式上报一次
+		if !s.reportStatus(url, data, 600*time.Millisecond, true, false) {
+			continue
+		}
+		if s.reportStatus(url, data, 5*time.Second, false, true) {
+			return ip
+		}
+	}
+
+	return ""
+}
+
+// firstGatewayPrefix 返回第一块有网关网卡的 /24 前缀
+func firstGatewayPrefix(nicManager *nic.NCManage) string {
+	for _, nicConfig := range nicManager.NICList {
+		if nicConfig.MacAddr == zeroMAC || !isIPv4Literal(nicConfig.Ip4Gate) {
+			continue
+		}
+		if prefix := subnetPrefix(nicConfig.Ip4Gate); prefix != "" {
+			return prefix
+		}
+	}
+	return ""
 }
 
 // reportTo 上报到指定主控

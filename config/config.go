@@ -27,6 +27,7 @@ type Config struct {
 	ReportPath         string // 上报 API 路径
 	ReportHost         string // 上报地址（IP/域名，留空则由网关推算）
 	GatewayOffset      int    // 网关偏移量（默认 2，即 x.x.x.2）
+	ScanSubnet         bool   // 是否允许网段扫描（默认关闭，风险高）
 
 	// 功能开关
 	PasswordChangeEnabled bool // 是否允许宿主机下发改密
@@ -84,6 +85,7 @@ func defaultConfig() *Config {
 		ReportPath:         "/api/client/upload",
 		ReportHost:         "",
 		GatewayOffset:      2,
+		ScanSubnet:         false, // 默认不扫描网段：避免内网主机冒充主控
 
 		PasswordChangeEnabled: true,
 		DiskExtendEnabled:     true,
@@ -154,6 +156,7 @@ func (c *Config) applyJSON(data []byte) error {
 		setStringPtr(s.Path, &c.ReportPath)
 		setStringPtr(s.Host, &c.ReportHost)
 		setIntPtr(s.GatewayOffset, &c.GatewayOffset)
+		setBoolPtr(s.ScanSubnet, &c.ScanSubnet)
 	}
 
 	if f := file.Features; f != nil {
@@ -214,6 +217,11 @@ func (c *Config) applyINI(sections map[string]map[string]string) error {
 		}
 		if err := setInt(s, "gateway_offset", &c.GatewayOffset); err != nil {
 			return err
+		}
+		if v, ok2 := s["scan_subnet"]; ok2 {
+			if b, err := parseBool(v); err == nil {
+				c.ScanSubnet = b
+			}
 		}
 	}
 
@@ -307,6 +315,7 @@ type fileConfig struct {
 		Path          *string `json:"path"`
 		Host          *string `json:"host"`
 		GatewayOffset *int    `json:"gateway_offset"`
+		ScanSubnet    *bool   `json:"scan_subnet"`
 	} `json:"server"`
 	Features *struct {
 		Report         *bool `json:"report"`
