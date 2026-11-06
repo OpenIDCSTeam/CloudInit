@@ -137,6 +137,11 @@ jobs:
     - name: Display structure of downloaded files
       run: ls -R artifacts
 
+    - name: Add install scripts
+      run: |
+        cp scripts/install.sh artifacts/install.sh
+        cp scripts/install.ps1 artifacts/install.ps1
+
     - name: Create/Update beta tag
       run: |
         git config user.name "github-actions[bot]"
@@ -161,6 +166,8 @@ jobs:
           artifacts/CloudInit-tools.json
           artifacts/CloudInit-tool-*.exe
           artifacts/CloudInit-tool-*.cmd
+          artifacts/install.sh
+          artifacts/install.ps1
         tag_name: beta
         name: Beta Build (Latest)
         body: |
@@ -195,6 +202,11 @@ jobs:
     - name: Display structure of downloaded files
       run: ls -R artifacts
 
+    - name: Add install scripts
+      run: |
+        cp scripts/install.sh artifacts/install.sh
+        cp scripts/install.ps1 artifacts/install.ps1
+
     - name: Create version tag
       run: |
         git config user.name "github-actions[bot]"
@@ -219,6 +231,8 @@ jobs:
           artifacts/CloudInit-tools.json
           artifacts/CloudInit-tool-*.exe
           artifacts/CloudInit-tool-*.cmd
+          artifacts/install.sh
+          artifacts/install.ps1
         tag_name: ${{ github.event.inputs.version }}
         name: Release ${{ github.event.inputs.version }}
         draft: false
@@ -260,5 +274,6 @@ jobs:
         EDGEONE_PROJECT_NAME: ${{ vars.EDGEONE_PROJECT_NAME || 'cloudinit' }}
         EDGEONE_PREFIX: ${{ vars.EDGEONE_PREFIX || 'cloudinit' }}
       run: |
+        cp scripts/install.sh scripts/install.ps1 artifacts/
         chmod +x scripts/sync_edgeone.sh
         ./scripts/sync_edgeone.sh artifacts "${{ github.event.inputs.version }}" eo-site

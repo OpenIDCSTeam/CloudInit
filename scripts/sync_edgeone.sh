@@ -43,7 +43,7 @@ rm -rf "$OUT_DIR"
 mkdir -p "$TARGET_DIR"
 
 copied=0
-for file in "$ARTIFACTS_DIR"/CloudInit-*; do
+for file in "$ARTIFACTS_DIR"/CloudInit-* "$ARTIFACTS_DIR"/install.sh "$ARTIFACTS_DIR"/install.ps1; do
   [ -f "$file" ] || continue
   cp "$file" "$TARGET_DIR/$(basename "$file")"
   copied=$((copied + 1))

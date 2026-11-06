@@ -19,6 +19,51 @@ OpenIDC 虚拟机初始化与状态上报服务。部署在虚拟机内部，负
 - **多平台支持** - 通过平台抽象层适配 Linux / Windows / macOS
 - **配置覆盖** - 支持 `IDCConfig.ini` 文件覆盖默认运行参数
 
+## 一键安装
+
+脚本会自动下载最新版本、停止旧服务、替换二进制并注册开机自启服务（服务名统一为 `cloudinit`）。
+
+**Linux / macOS**（root）：
+
+```bash
+curl -fsSL https://eo-idc.pika.net.cn/cloudinit/install.sh | sudo sh
+```
+
+指定版本：
+
+```bash
+curl -fsSL https://eo-idc.pika.net.cn/cloudinit/install.sh | sudo sh -s v0.4.6
+```
+
+**Windows**（管理员 PowerShell）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://eo-idc.pika.net.cn/cloudinit/install.ps1 | iex"
+```
+
+镜像不可用时改用 GitHub：
+
+```bash
+curl -fsSL https://github.com/OpenIDCSTeam/CloudInit/releases/latest/download/install.sh | sudo sh
+```
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://github.com/OpenIDCSTeam/CloudInit/releases/latest/download/install.ps1 | iex"
+```
+
+| 平台 | 安装目录 | 服务 | 开机启动 |
+|---|---|---|---|
+| Windows | `C:\cloudinit` | Windows 服务 `cloudinit` | 自动（`sc query cloudinit` 可查） |
+| Linux | `/opt/cloudinit` | systemd `cloudinit` | `systemctl enable` |
+| macOS | `/opt/cloudinit` | launchd `cloudinit` | `RunAtLoad` |
+
+- 重复执行即为升级：先停服务、替换二进制，`IDCConfig.ini`、`.version`、`tool/` 均保留。
+- Windows 版二进制已内置服务支持（`svc.Run`），无需 NSSM 等第三方包装。
+- 卸载：
+  - Windows：`sc.exe stop cloudinit; sc.exe delete cloudinit`，再删除 `C:\cloudinit`
+  - Linux：`systemctl disable --now cloudinit; rm -rf /opt/cloudinit /etc/systemd/system/cloudinit.service`
+  - macOS：`sudo launchctl bootout system/cloudinit; rm -rf /opt/cloudinit /Library/LaunchDaemons/cloudinit.plist`
+
 ## 执行流程
 
 ```mermaid

@@ -63,6 +63,9 @@ type CloudInitService struct {
 	// 各子网上次成功上报的主控地址（子网前缀 -> IP），用于后续优先命中
 	masterTargets map[string]string
 
+	// done 主循环退出信号（服务模式下 Stop 后等待退出）
+	done chan struct{}
+
 	client *http.Client
 }
 
@@ -84,6 +87,7 @@ func NewCloudInitService() *CloudInitService {
 		cmdExecutor:   core.NewCmdExecutor(),
 		rdpManager:    remotedesk.New(),
 		masterTargets: map[string]string{},
+		done:          make(chan struct{}),
 		client:        newReportClient(),
 	}
 }
@@ -100,6 +104,8 @@ func newReportClient() *http.Client {
 
 // Start 启动服务主流程
 func (s *CloudInitService) Start() {
+	defer close(s.done)
+
 	atomic.StoreInt32(&s.running, 1)
 	s.registerSignals()
 
@@ -685,5 +691,11 @@ func main() {
 	core.MigrateTools()
 
 	service := NewCloudInitService()
+
+	// Windows 服务（SCM 启动）时交给服务框架托管，其余平台前台运行
+	if runAsService(service) {
+		return
+	}
+
 	service.Start()
 }
