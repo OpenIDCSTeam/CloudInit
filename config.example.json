@@ -1,0 +1,35 @@
+{
+  "server": {
+    "enabled": true,
+    "interval": 60,
+    "port": 1881,
+    "fallback_port": 1880,
+    "path": "/api/client/upload",
+    "host": "",
+    "gateway_offset": 2
+  },
+  "features": {
+    "report": true,
+    "password_change": true,
+    "disk_extend": true,
+    "activation": true,
+    "virtio": true,
+    "todesk": true,
+    "anydesk": true,
+    "sunlogin": true
+  },
+  "update": {
+    "enabled": true,
+    "interval": 86400,
+    "repo_url": "https://api.github.com/repos/OpenIDCSTeam/CloudInit/releases/latest",
+    "mirror_url": "https://eo-idc.pika.net.cn/cloudinit"
+  },
+  "virtio": {
+    "url_x64": "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.302-1/virtio-win-gt-x64.msi",
+    "url_x86": "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.302-1/virtio-win-gt-x86.msi"
+  },
+  "log": {
+    "level": "INFO",
+    "retention": "7 days"
+  }
+}

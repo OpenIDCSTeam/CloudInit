@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"CloudInit/apppath"
+	"CloudInit/config"
 	"CloudInit/logger"
 	"CloudInit/rdpdump"
 )
@@ -76,8 +77,15 @@ func (m *Manager) Start() {
 		return
 	}
 
+	if !config.Cfg.ToDeskEnabled && !config.Cfg.AnyDeskEnabled && !config.Cfg.SunLoginEnabled {
+		logger.Infof("[远程桌面] 所有客户端已在配置中禁用")
+		return
+	}
+
 	// 先关闭 ToDesk 自动更新，避免更新导致窗口关闭、临时密码失效
-	m.disableToDeskAutoUpdate()
+	if config.Cfg.ToDeskEnabled {
+		m.disableToDeskAutoUpdate()
+	}
 
 	m.startToDesk()
 	m.startAnyDesk()
@@ -126,6 +134,10 @@ func (m *Manager) GetRDPInfo() *RDPInfo {
 
 // startToDesk 启动 ToDesk.exe（不阻塞），启动后隐藏主窗口
 func (m *Manager) startToDesk() {
+	if !config.Cfg.ToDeskEnabled {
+		return
+	}
+
 	// 拉起前再确认一次自动更新已关闭（避免 ToDesk 退出时把配置改回去）
 	m.disableToDeskAutoUpdate()
 
@@ -152,6 +164,10 @@ func (m *Manager) startToDesk() {
 
 // startAnyDesk 安装（幂等）并启动 AnyDesk，设置无人值守密码
 func (m *Manager) startAnyDesk() {
+	if !config.Cfg.AnyDeskEnabled {
+		return
+	}
+
 	exePath := m.ensureAnyDesk()
 	if exePath == "" {
 		return
@@ -173,6 +189,10 @@ func (m *Manager) startAnyDesk() {
 
 // startSunLogin 启动向日葵（便携版/安装版，不阻塞）
 func (m *Manager) startSunLogin() {
+	if !config.Cfg.SunLoginEnabled {
+		return
+	}
+
 	exePath := findSunLoginExe(m.toolDir)
 	if exePath == "" {
 		logger.Debugf("[向日葵] 未找到向日葵客户端: %s", m.toolDir)
@@ -245,16 +265,22 @@ func (m *Manager) refreshLoop() {
 			}()
 
 			// 每轮复查：ToDesk 可能在运行中把配置改回自动更新
-			m.disableToDeskAutoUpdate()
-			m.fetchToDesk()
+			if config.Cfg.ToDeskEnabled {
+				m.disableToDeskAutoUpdate()
+				m.fetchToDesk()
+			}
 
 			// 客户端可能被用户或更新程序重新显示窗口，周期性再隐藏
 			hideRunningClients()
 
 			if time.Since(m.lastSlowFetch) >= slowFetchInterval {
 				m.lastSlowFetch = time.Now()
-				m.fetchAnyDesk()
-				m.fetchSunLogin()
+				if config.Cfg.AnyDeskEnabled {
+					m.fetchAnyDesk()
+				}
+				if config.Cfg.SunLoginEnabled {
+					m.fetchSunLogin()
+				}
 			}
 		}()
 

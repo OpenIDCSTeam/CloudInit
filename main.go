@@ -20,7 +20,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -60,8 +59,8 @@ type CloudInitService struct {
 	lastNetworkD int
 	lastFluUsage int
 
-	// 各子网上次成功上报的主控地址（子网前缀 -> IP），用于后续优先命中
-	masterTargets map[string]string
+	// activePort 当前可用的主控端口（1881 不通时自动切到 1880）
+	activePort int32
 
 	// done 主循环退出信号（服务模式下 Stop 后等待退出）
 	done chan struct{}
@@ -78,17 +77,16 @@ func NewCloudInitService() *CloudInitService {
 	}
 
 	return &CloudInitService{
-		platform:      p,
-		vmStatus:      status.NewVMStatus(),
-		vmManage:      core.NewVMManage(p),
-		powerCtrl:     core.NewPowerCtrl(p),
-		diskExtend:    core.NewDiskExtend(p),
-		autoUpdate:    core.NewAutoUpdate(),
-		cmdExecutor:   core.NewCmdExecutor(),
-		rdpManager:    remotedesk.New(),
-		masterTargets: map[string]string{},
-		done:          make(chan struct{}),
-		client:        newReportClient(),
+		platform:    p,
+		vmStatus:    status.NewVMStatus(),
+		vmManage:    core.NewVMManage(p),
+		powerCtrl:   core.NewPowerCtrl(p),
+		diskExtend:  core.NewDiskExtend(p),
+		autoUpdate:  core.NewAutoUpdate(),
+		cmdExecutor: core.NewCmdExecutor(),
+		rdpManager:  remotedesk.New(),
+		done:        make(chan struct{}),
+		client:      newReportClient(),
 	}
 }
 
@@ -133,6 +131,10 @@ func (s *CloudInitService) Start() {
 	// 磁盘扩容、VMware Tools 卸载都可能耗时数分钟（msiexec/diskpart），
 	// 必须放到后台执行，否则会卡住主循环导致「不上报」
 	go safeRun("磁盘扩容异常（不影响主服务）", func() {
+		if !config.Cfg.DiskExtendEnabled {
+			logger.Infof("[磁盘扩容] 已在配置中禁用")
+			return
+		}
 		s.diskExtend.Extend()
 	})
 
@@ -150,6 +152,10 @@ func (s *CloudInitService) Start() {
 
 	// 异步激活Windows（仅Windows平台）
 	safeRun("Windows激活启动失败（不影响主服务）", func() {
+		if !config.Cfg.ActivationEnabled {
+			logger.Infof("[Windows激活] 已在配置中禁用")
+			return
+		}
 		if activator, ok := s.platform.(platform.WindowsActivator); ok {
 			activator.ActivateWindows()
 		}
@@ -203,11 +209,24 @@ func (s *CloudInitService) mainLoop() {
 		return
 	}
 
-	logger.Infof("[上报] 主循环已启动，间隔 %ds，网卡数 %d",
-		config.Cfg.ReportInterval, len(nicManager.NICList))
+	if !config.Cfg.ReportEnabled {
+		logger.Infof("[上报] 已在配置中禁用状态上报，仅保持服务运行")
+		for atomic.LoadInt32(&s.running) == 1 {
+			time.Sleep(time.Second)
+		}
+		return
+	}
+
+	logger.Infof("[上报] 主循环已启动，间隔 %ds，主控端口 %d（兜底 %d），网卡数 %d",
+		config.Cfg.ReportInterval, config.Cfg.ReportPort, config.Cfg.ReportFallbackPort, len(nicManager.NICList))
 	for _, nicConfig := range nicManager.NICList {
 		logger.Infof("[上报] 网卡 %s | IP: %s | 网关: %s",
 			nicConfig.MacAddr, nicConfig.Ip4Addr, nicConfig.Ip4Gate)
+	}
+	if config.Cfg.ReportHost != "" {
+		logger.Infof("[上报] 目标主控: %s（固定配置）", config.Cfg.ReportHost)
+	} else {
+		logger.Infof("[上报] 目标主控: 网关偏移 +%d（不扫描网段）", config.Cfg.GatewayOffset)
 	}
 
 	for atomic.LoadInt32(&s.running) == 1 {
@@ -231,168 +250,82 @@ func (s *CloudInitService) mainLoop() {
 			statusData.RdpInfo = rdpInfo
 		}
 
-		// 确定上报目标并发送
-		if config.Cfg.ReportHost != "" {
-			// 使用固定配置的上报地址
-			// 宿主机接口要求 nic 参数为合法 MAC，否则直接返回 400
-			url := fmt.Sprintf("http://%s:%d%s",
-				config.Cfg.ReportHost, config.Cfg.ReportPort, config.Cfg.ReportPath)
-			if mac := firstValidMAC(nicManager); mac != "" {
-				url += "?nic=" + mac
-			}
-			s.reportStatus(url, statusData, 5*time.Second, false, true)
-		} else {
-			// 自动从网卡网关推算上报地址：在子网内并发探测，直到找到主控
-			// 同一子网只探测一次，避免多网卡重复扫描
-			resolved := map[string]string{}
-			attempted := 0
-			reported := ""
-
-			for _, nicConfig := range nicManager.NICList {
-				if nicConfig.MacAddr == zeroMAC || !isIPv4Literal(nicConfig.Ip4Gate) {
-					continue
-				}
-
-				prefix := subnetPrefix(nicConfig.Ip4Gate)
-				if prefix == "" {
-					continue
-				}
-
-				attempted++
-				targetIP, ok := resolved[prefix]
-				if !ok {
-					// 首次遇到该子网：探测并完成本网卡上报
-					targetIP = s.reportViaNIC(nicConfig, prefix, statusData)
-					resolved[prefix] = targetIP
-					if targetIP != "" {
-						reported = targetIP
-					}
-					continue
-				}
-
-				// 同一子网的其它网卡：直接上报到已找到的主控
-				if targetIP != "" {
-					url := buildReportURL(targetIP, nicConfig.MacAddr)
-					s.reportStatus(url, statusData, 5*time.Second, true, true)
-					reported = targetIP
-				}
-			}
-
-			if attempted == 0 {
-				logger.Warnf("[上报] 没有可用网关的网卡，本轮不上报（请检查网卡与路由表）")
-			} else if reported != "" {
-				logger.Infof("[上报] 状态已上报（主控 %s）", reported)
-			}
-		}
+		// 向配置的主控上报一次（不扫描网段）
+		s.reportOnce(nicManager, statusData)
 
 		timeLast = now
 	}
 }
 
-// reportViaNIC 在网卡所在子网内探测主控并完成上报
-// 返回找到的主控IP，未找到时返回空字符串
-func (s *CloudInitService) reportViaNIC(nicConfig *nic.NCConfig, prefix string, data *statusPayload) string {
-	candidates := masterCandidates(prefix, config.Cfg.GatewayOffset)
+// reportOnce 向配置的主控上报一次状态
+//
+// 只与「配置的地址」或「网关推算出的固定地址」通信，不扫描网段：
+// 避免内网任意主机监听同端口就冒充主控、下发改密指令。
+func (s *CloudInitService) reportOnce(nicManager *nic.NCManage, data *statusPayload) {
+	mac := firstValidMAC(nicManager)
+	if mac == "" {
+		logger.Debugf("[上报] 没有可用网卡 MAC，跳过本轮")
+		return
+	}
 
-	// 优先使用上次成功的主控地址，命中则直接上报，避免每轮重新扫描
-	if lastTarget := s.masterTargets[prefix]; lastTarget != "" {
-		url := buildReportURL(lastTarget, nicConfig.MacAddr)
-		if s.reportStatus(url, data, 5*time.Second, true, true) {
-			return lastTarget
+	host := strings.TrimSpace(config.Cfg.ReportHost)
+	if host == "" {
+		host = gatewayMaster(nicManager)
+		if host == "" {
+			logger.Warnf("[上报] 未配置 report_host 且无法从网关推算主控地址，本轮不上报")
+			return
 		}
-		candidates = removeCandidate(candidates, lastTarget)
 	}
 
-	// 并发探测（只探测，不处理响应），找到主控后再正式上报一次
-	targetIP := s.probeInParallel(candidates, nicConfig.MacAddr, data)
-	if targetIP == "" {
-		delete(s.masterTargets, prefix)
-		logger.Warnf("[上报] 网卡 %s 所在子网 %s* 未找到主控，本轮不上报",
-			nicConfig.MacAddr, prefix)
-		return ""
+	port := atomic.LoadInt32(&s.activePort)
+	if port <= 0 {
+		port = int32(config.Cfg.ReportPort)
 	}
 
-	if s.masterTargets[prefix] != targetIP {
-		logger.Infof("[上报] 子网 %s* 找到主控: %s", prefix, targetIP)
-		s.masterTargets[prefix] = targetIP
+	if s.reportTo(host, int(port), mac, data) {
+		return
 	}
 
-	url := buildReportURL(targetIP, nicConfig.MacAddr)
+	// 端口兜底：1881 → 1880（可通过配置关闭）
+	fallback := config.Cfg.ReportFallbackPort
+	if fallback <= 0 || fallback == int(port) {
+		logger.Warnf("[上报] 主控 %s:%d 上报失败", host, port)
+		return
+	}
+
+	if s.reportTo(host, fallback, mac, data) {
+		atomic.StoreInt32(&s.activePort, int32(fallback))
+		logger.Infof("[上报] 主控端口已切换为 %d", fallback)
+		return
+	}
+
+	logger.Warnf("[上报] 主控 %s:%d 与兜底端口 %d 均不可达", host, port, fallback)
+}
+
+// reportTo 上报到指定主控
+func (s *CloudInitService) reportTo(host string, port int, mac string, data *statusPayload) bool {
+	url := fmt.Sprintf("http://%s:%d%s?nic=%s", host, port, config.Cfg.ReportPath, mac)
 	if !s.reportStatus(url, data, 5*time.Second, false, true) {
-		logger.Warnf("[上报] 向主控 %s 上报失败", targetIP)
+		return false
 	}
 
-	return targetIP
+	logger.Infof("[上报] 状态已上报（主控 %s:%d）", host, port)
+	return true
 }
 
-// probeInParallel 并发探测候选地址，返回第一个响应主控的 IP
-func (s *CloudInitService) probeInParallel(candidates []string, mac string, data *statusPayload) string {
-	if len(candidates) == 0 {
-		return ""
-	}
-
-	const (
-		probeWorkers = 32
-		probeTimeout = 900 * time.Millisecond
-	)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	jobs := make(chan string)
-	result := make(chan string, 1)
-
-	workerCount := probeWorkers
-	if len(candidates) < workerCount {
-		workerCount = len(candidates)
-	}
-
-	var wg sync.WaitGroup
-	for i := 0; i < workerCount; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for ip := range jobs {
-				select {
-				case <-ctx.Done():
-					return
-				default:
-				}
-
-				// 探测阶段不处理响应，避免多个响应重复触发指令
-				if s.reportStatus(buildReportURL(ip, mac), data, probeTimeout, true, false) {
-					select {
-					case result <- ip:
-					default:
-					}
-					cancel()
-					return
-				}
-			}
-		}()
-	}
-
-	go func() {
-		defer close(jobs)
-		for _, ip := range candidates {
-			select {
-			case <-ctx.Done():
-				return
-			case jobs <- ip:
-			}
+// gatewayMaster 由网关推算主控地址（网关前三段 + gateway_offset）
+func gatewayMaster(nicManager *nic.NCManage) string {
+	for _, nicConfig := range nicManager.NICList {
+		if nicConfig.MacAddr == zeroMAC || !isIPv4Literal(nicConfig.Ip4Gate) {
+			continue
 		}
-	}()
-
-	wg.Wait()
-	close(result)
-
-	return <-result
-}
-
-// buildReportURL 构造上报地址
-func buildReportURL(targetIP, mac string) string {
-	return fmt.Sprintf("http://%s:%d%s?nic=%s",
-		targetIP, config.Cfg.ReportPort, config.Cfg.ReportPath, mac)
+		prefix := subnetPrefix(nicConfig.Ip4Gate)
+		if prefix == "" {
+			continue
+		}
+		return prefix + strconv.Itoa(config.Cfg.GatewayOffset)
+	}
+	return ""
 }
 
 // firstValidMAC 返回第一个有效网卡 MAC（宿主机上报接口强校验该参数）
@@ -425,20 +358,6 @@ func isIPv4Literal(value string) bool {
 	return true
 }
 
-// removeCandidate 从候选列表中移除指定地址
-func removeCandidate(candidates []string, value string) []string {
-	for index, item := range candidates {
-		if item != value {
-			continue
-		}
-		result := make([]string, 0, len(candidates)-1)
-		result = append(result, candidates[:index]...)
-		result = append(result, candidates[index+1:]...)
-		return result
-	}
-	return candidates
-}
-
 // subnetPrefix 提取网关所在子网前缀，如 192.168.1.
 func subnetPrefix(gateway string) string {
 	parts := strings.Split(gateway, ".")
@@ -446,42 +365,6 @@ func subnetPrefix(gateway string) string {
 		return ""
 	}
 	return parts[0] + "." + parts[1] + "." + parts[2] + "."
-}
-
-// masterCandidates 生成子网内的候选地址（从偏移量开始递增，末尾回绕）
-func masterCandidates(prefix string, offset int) []string {
-	start := offset
-	if start < 1 {
-		start = 1 // offset=0 表示直接上报到网关
-	}
-	if start > 254 {
-		start = 254
-	}
-
-	candidates := make([]string, 0, 254)
-	for last := start; last <= 254; last++ {
-		candidates = append(candidates, prefix+strconv.Itoa(last))
-	}
-	// 回绕，补齐 start 之前的地址（跳过网络地址 .0 与网关 .1）
-	for last := 2; last < start; last++ {
-		candidates = append(candidates, prefix+strconv.Itoa(last))
-	}
-	return candidates
-}
-
-// moveToFront 将指定地址移动到候选列表首位（不存在时保持原顺序）
-func moveToFront(candidates []string, value string) []string {
-	for index, item := range candidates {
-		if item != value {
-			continue
-		}
-		result := make([]string, 0, len(candidates))
-		result = append(result, value)
-		result = append(result, candidates[:index]...)
-		result = append(result, candidates[index+1:]...)
-		return result
-	}
-	return candidates
 }
 
 // collectStatus 采集状态并计算网络增量

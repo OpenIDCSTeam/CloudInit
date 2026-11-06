@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"CloudInit/config"
 	"CloudInit/logger"
 	"CloudInit/platform"
 )
@@ -78,6 +79,11 @@ func (v *VMManage) doManage(vmUUID, vmPass string) {
 		}()
 		v.platform.SetHostname(vmUUID)
 	}()
+
+	if !config.Cfg.PasswordChangeEnabled {
+		logger.Infof("[VM配置] 已在配置中禁用密码修改，仅更新主机名")
+		return
+	}
 
 	// 设置root密码
 	func() {

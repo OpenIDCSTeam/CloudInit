@@ -17,7 +17,7 @@ OpenIDC 虚拟机初始化与状态上报服务。部署在虚拟机内部，负
 - **工具更新** - `tool` 目录下的工具按各自版本独立在线更新（含 sha256 校验）
 - **远程桌面集成** - Windows 下自动启动 ToDesk / AnyDesk / 向日葵，主窗口只隐藏不关闭，并采集地址与密码随状态上报（ToDesk 额外强制关闭自动更新）
 - **多平台支持** - 通过平台抽象层适配 Linux / Windows / macOS
-- **配置覆盖** - 支持 `IDCConfig.ini` 文件覆盖默认运行参数
+- **配置覆盖** - 支持 `config.json`（兼容 `IDCConfig.ini`）覆盖默认运行参数，所有功能均可开关
 
 ## 一键安装
 
@@ -97,7 +97,7 @@ graph TD
 CloudInit/
 ├── main.go                  # 服务入口（主循环、上报、指令处理、信号）
 ├── go.mod / go.sum          # Go 模块依赖
-├── IDCConfig.ini            # 运行配置文件（可选，覆盖默认参数）
+├── config.json              # 运行配置文件（可选，覆盖默认参数）
 │
 ├── tool/                    # 工具目录（脚本与客户端，支持在线更新）
 │   ├── tools.json           # 工具版本清单（构建时生成发布资产）
@@ -197,7 +197,7 @@ journalctl -u ServerInit -f   # 查看日志
 ```
 C:\CloudInit\
 ├── CloudInit.exe
-├── IDCConfig.ini        # 可选
+├── config.json          # 可选
 ├── .version             # 运行时生成，记录当前版本
 └── tool\
     ├── MASAIO.cmd
@@ -216,31 +216,70 @@ go run .
 
 ## 配置说明
 
-创建 `IDCConfig.ini` 文件（与可执行文件同目录），可覆盖以下参数：
+配置文件为 **`config.json`**（模板见仓库根目录 `config.example.json`）。
 
-```ini
-[server]
-report_interval = 60          # 上报间隔（秒）
-report_port = 1880            # 上报端口
-report_path = /api/client/upload
-report_host =                 # 固定上报地址（留空则自动推算）
-gateway_offset = 2            # 上报地址扫描起点（子网内依次尝试 .2~.254；0/1 表示从网关开始）
+### 查找顺序
 
-[update]
-enabled = true                # 是否启用自动更新
-interval = 86400              # 检查间隔（秒）
-repo_url = https://api.github.com/repos/OpenIDCSTeam/CloudInit/releases/latest
-mirror_url = https://eo-idc.pika.net.cn/cloudinit   # EdgeOne 镜像（优先，留空则只走 GitHub）
+1. 程序目录 `config.json`
+2. 各磁盘根目录 `X:\config.json`（含光驱、挂载的云盘）
+3. 云初始化数据盘：`X:\cloud-init\config.json`、`X:\cidata\config.json`（兼容 cloud-init NoCloud / ConfigDrive 的 cidata 卷）
 
-[system]
-virtio_enabled = true         # 自动检测 KVM 平台并安装 virtio 驱动
-virtio_url_x64 = https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.302-1/virtio-win-gt-x64.msi
-virtio_url_x86 = https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.302-1/virtio-win-gt-x86.msi
+都没有时回退到旧版 `IDCConfig.ini`（与程序同目录），再没有则使用默认值。
 
-[log]
-level = INFO                  # 日志级别
-retention = 7 days            # 日志保留时间
+### 配置项
+
+```json
+{
+  "server": {
+    "enabled": true,
+    "interval": 60,
+    "port": 1881,
+    "fallback_port": 1880,
+    "path": "/api/client/upload",
+    "host": "",
+    "gateway_offset": 2
+  },
+  "features": {
+    "report": true,
+    "password_change": true,
+    "disk_extend": true,
+    "activation": true,
+    "virtio": true,
+    "todesk": true,
+    "anydesk": true,
+    "sunlogin": true
+  },
+  "update": {
+    "enabled": true,
+    "interval": 86400,
+    "repo_url": "https://api.github.com/repos/OpenIDCSTeam/CloudInit/releases/latest",
+    "mirror_url": "https://eo-idc.pika.net.cn/cloudinit"
+  },
+  "virtio": {
+    "url_x64": "https://fedorapeople.org/.../virtio-win-gt-x64.msi",
+    "url_x86": "https://fedorapeople.org/.../virtio-win-gt-x86.msi"
+  },
+  "log": { "level": "INFO", "retention": "7 days" }
+}
 ```
+
+| 分组 | 键 | 说明 |
+|---|---|---|
+| server | `enabled` | 是否启用状态上报（关闭后仅保持服务运行） |
+| server | `interval` | 上报间隔（秒），最小 5 |
+| server | `port` | 主控端口，默认 **1881** |
+| server | `fallback_port` | 兜底端口，默认 **1880**（0 表示不启用） |
+| server | `host` | 主控 IP / 域名；留空则取「网关前三段 + gateway_offset」 |
+| server | `gateway_offset` | 网关偏移，默认 2（即 x.x.x.2），不扫描网段 |
+| features | `password_change` | 是否允许宿主机下发改密 |
+| features | `disk_extend` | 是否自动扩容磁盘 |
+| features | `activation` | 是否自动激活 Windows |
+| features | `virtio` | 是否自动安装 virtio 驱动 |
+| features | `todesk` / `anydesk` / `sunlogin` | 是否启用对应远程桌面客户端 |
+| update | `enabled` / `interval` | 自动更新开关与周期 |
+| update | `repo_url` / `mirror_url` | 更新地址（镜像优先，失败回退 GitHub） |
+
+> 旧版 `IDCConfig.ini` 仍可继续使用，字段与上表一一对应（`[server]` / `[features]` / `[update]` / `[system]` / `[log]`）。
 
 ## virtio 驱动自动安装
 
