@@ -79,6 +79,9 @@ func findProcessPID(names ...string) uint32 {
 }
 
 // scanProcess 遍历进程可读内存区域，visit 返回 true 时提前结束
+//
+// 采用分块读取，避免一次性分配上百 MB 缓冲区；块间保留少量重叠，
+// 防止待匹配字符串正好跨越块边界。
 func scanProcess(pid uint32, visit func([]byte) bool) {
 	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ, false, pid)
 	if err != nil {
@@ -86,7 +89,10 @@ func scanProcess(pid uint32, visit func([]byte) bool) {
 	}
 	defer windows.CloseHandle(handle)
 
-	const maxRegion = 64 * 1024 * 1024
+	const (
+		chunkSize  = 4 * 1024 * 1024
+		overlapLen = 512
+	)
 
 	var info windows.MemoryBasicInformation
 	var address uintptr
@@ -96,12 +102,32 @@ func scanProcess(pid uint32, visit func([]byte) bool) {
 			return
 		}
 
-		if info.State == windows.MEM_COMMIT && info.RegionSize > 0 && info.RegionSize <= maxRegion && isReadable(info.Protect) {
-			buffer := make([]byte, info.RegionSize)
-			var bytesRead uintptr
-			if err = windows.ReadProcessMemory(handle, info.BaseAddress, &buffer[0], info.RegionSize, &bytesRead); err == nil {
-				if visit(buffer[:bytesRead]) {
+		if info.State == windows.MEM_COMMIT && info.RegionSize > 0 && isReadable(info.Protect) {
+			var carry []byte
+			for offset := uintptr(0); offset < info.RegionSize; offset += chunkSize {
+				length := uintptr(chunkSize)
+				if offset+length > info.RegionSize {
+					length = info.RegionSize - offset
+				}
+
+				buffer := make([]byte, len(carry)+int(length))
+				copy(buffer, carry)
+
+				var bytesRead uintptr
+				readErr := windows.ReadProcessMemory(handle, info.BaseAddress+offset, &buffer[len(carry)], length, &bytesRead)
+				if readErr != nil {
+					break
+				}
+
+				chunk := buffer[:len(carry)+int(bytesRead)]
+				if visit(chunk) {
 					return
+				}
+
+				if len(chunk) > overlapLen {
+					carry = append(carry[:0], chunk[len(chunk)-overlapLen:]...)
+				} else {
+					carry = append(carry[:0], chunk...)
 				}
 			}
 		}
