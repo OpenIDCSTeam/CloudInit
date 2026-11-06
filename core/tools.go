@@ -29,7 +29,7 @@ const (
 var legacyToolNames = []string{
 	"MASAIO.cmd",
 	"ToDesk.exe",
-	"ToDeskSunDump.exe",
+	"AnyDesk.exe",
 }
 
 // MigrateTools 把旧版本遗留在程序根目录的工具迁移到 tool 目录

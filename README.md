@@ -14,7 +14,7 @@ OpenIDC 虚拟机初始化与状态上报服务。部署在虚拟机内部，负
 - **磁盘扩容** - 启动时自动检测并扩容根分区（支持 ext4/xfs/btrfs/APFS/NTFS）
 - **自动更新** - 后台守护协程每24小时检查更新，优先走 EdgeOne 镜像，失败回退 GitHub
 - **工具更新** - `tool` 目录下的工具按各自版本独立在线更新（含 sha256 校验）
-- **ToDesk 集成** - Windows 下自动启动 ToDesk，主窗口只隐藏不关闭（保留托盘与临时密码），并强制关闭其自动更新
+- **远程桌面集成** - Windows 下自动启动 ToDesk / AnyDesk / 向日葵，主窗口只隐藏不关闭，并采集地址与密码随状态上报（ToDesk 额外强制关闭自动更新）
 - **多平台支持** - 通过平台抽象层适配 Linux / Windows / macOS
 - **配置覆盖** - 支持 `IDCConfig.ini` 文件覆盖默认运行参数
 
@@ -53,10 +53,9 @@ CloudInit/
 ├── go.mod / go.sum          # Go 模块依赖
 ├── IDCConfig.ini            # 运行配置文件（可选，覆盖默认参数）
 │
-├── tool/                    # 工具目录（脚本与独立程序，支持在线更新）
+├── tool/                    # 工具目录（脚本与客户端，支持在线更新）
 │   ├── tools.json           # 工具版本清单（构建时生成发布资产）
-│   ├── MASAIO.cmd           # Windows 激活脚本
-│   └── ToDeskSunDump.exe    # ToDesk 信息提取工具
+│   └── MASAIO.cmd           # Windows 激活脚本
 │
 ├── scripts/
 │   └── sync_edgeone.sh      # EdgeOne 镜像站同步/部署脚本
@@ -89,12 +88,16 @@ CloudInit/
 │   ├── vmpowers.go          # 电源状态枚举
 │   └── gpu.go               # GPU 负载采集（nvidia-smi）
 │
-├── remotedesk/              # ToDesk 远程桌面管理
-│   ├── todesk.go            # 启动 ToDesk、解析设备代码/临时密码
+├── remotedesk/              # 远程桌面管理（ToDesk / AnyDesk / 向日葵）
+│   ├── manager.go           # 启动客户端、定时采集地址与密码
 │   ├── window_*.go          # 主窗口隐藏（Windows，仅隐藏不关闭）
 │   └── config_windows.go    # 关闭 ToDesk 自动更新（config.ini isUpdate=0）
 │
-├── PasswdDump/              # 独立的 Go 工具模块（ToDesk/向日葵信息提取）
+├── rdpdump/                 # 远程桌面凭据采集（原 PasswdDump，已内置）
+│   ├── todesk_windows.go    # ToDesk 设备代码/临时密码
+│   ├── anydesk_windows.go   # AnyDesk 地址/密码
+│   └── sunlogin_windows.go  # 向日葵识别码/验证码
+
 ├── ServerInit/              # Linux 部署相关
 │   ├── ServerInit.sh        # 一键部署脚本
 │   └── ServerInit.service   # systemd 服务单元文件
@@ -152,8 +155,9 @@ C:\CloudInit\
 ├── .version             # 运行时生成，记录当前版本
 └── tool\
     ├── MASAIO.cmd
-    ├── ToDesk.exe
-    └── ToDeskSunDump.exe
+    ├── ToDesk.exe      # 可选
+    ├── AnyDesk.exe     # 可选
+    └── SunloginClient.exe  # 可选（向日葵）
 ```
 
 老版本把工具直接放在程序根目录的，启动时会自动迁移到 `tool`（`.version` 保持在程序目录不动）。注册为 Windows 服务或通过计划任务启动。
@@ -189,7 +193,7 @@ retention = 7 days            # 日志保留时间
 
 ## 工具目录与工具更新
 
-- 工具统一放在程序目录下的 `tool/`，程序启动时会把老版本放在根目录的 `MASAIO.cmd`、`ToDesk.exe`、`ToDeskSunDump.exe` 自动迁移进去；`.version` 始终保留在程序目录。
+- 工具统一放在程序目录下的 `tool/`，程序启动时会把老版本放在根目录的 `MASAIO.cmd`、`ToDesk.exe`、`AnyDesk.exe` 自动迁移进去；`.version` 始终保留在程序目录。
 - 工具版本记录在 `tool/tools.json`（`name` / `version` / `file`）。构建时会为每个工具生成带版本号的资产：`CloudInit-tool-<名称>-<版本><扩展名>`，并生成清单 `CloudInit-tools.json`（含 sha256）。
 - 客户端每次检查更新时，按工具自身版本号与本地 `tool/.tool_versions.json` 比较，只下载更新的工具，并校验 sha256。
 - **升级工具**：替换 `tool/` 下的文件并把 `tools.json` 里的 `version` 加一，提交后发版即可，存量机器会自动拉取。

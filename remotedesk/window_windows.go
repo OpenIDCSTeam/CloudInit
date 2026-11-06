@@ -25,31 +25,30 @@ var (
 
 const swHide = 0
 
-// hideToDeskWindow 延迟隐藏 ToDesk 主窗口（保留托盘图标与进程）
+// hideWindowsOfProcess 延迟隐藏指定进程的主窗口
 //
 // 只调用 ShowWindow(SW_HIDE)，绝不发送 WM_CLOSE / 结束进程：
-// 窗口关闭会导致 ToDesk 临时密码不可见，隐藏后用户仍可从托盘恢复窗口。
-func hideToDeskWindow() {
-	// 最多等待 20 秒让 ToDesk 创建主窗口
-	for i := 0; i < 20; i++ {
+// 窗口关闭会导致临时密码不可见，隐藏后仍可从托盘恢复。
+func hideWindowsOfProcess(exeName string, waitSeconds int) {
+	for i := 0; i < waitSeconds; i++ {
 		time.Sleep(time.Second)
 
-		pids := findToDeskPIDs()
+		pids := findProcessIDs(exeName)
 		if len(pids) == 0 {
 			continue
 		}
 
 		if hidden := hideProcessWindows(pids); hidden > 0 {
-			logger.Infof("[ToDesk] 已隐藏 ToDesk 主窗口（%d 个）", hidden)
+			logger.Infof("[远程桌面] 已隐藏 %s 主窗口（%d 个）", exeName, hidden)
 			return
 		}
 	}
 
-	logger.Debugf("[ToDesk] 未找到 ToDesk 窗口，跳过隐藏")
+	logger.Debugf("[远程桌面] 未找到 %s 窗口，跳过隐藏", exeName)
 }
 
-// findToDeskPIDs 查找所有 ToDesk.exe 进程 PID
-func findToDeskPIDs() []uint32 {
+// findProcessIDs 查找指定进程名的所有 PID
+func findProcessIDs(exeName string) []uint32 {
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
 		return nil
@@ -61,7 +60,7 @@ func findToDeskPIDs() []uint32 {
 
 	pids := make([]uint32, 0, 2)
 	for err = windows.Process32First(snapshot, &entry); err == nil; err = windows.Process32Next(snapshot, &entry) {
-		if strings.EqualFold(syscall.UTF16ToString(entry.ExeFile[:]), "ToDesk.exe") {
+		if strings.EqualFold(syscall.UTF16ToString(entry.ExeFile[:]), exeName) {
 			pids = append(pids, entry.ProcessID)
 		}
 	}

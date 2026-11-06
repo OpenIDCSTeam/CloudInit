@@ -29,8 +29,8 @@ var toDeskUpdateProcesses = []string{
 //
 // 1. 把 config.ini 中 [ConfigInfo] 段的 isUpdate 置为 0（ToDesk 自动更新开关）
 // 2. 结束可能存在的更新进程
-func (m *ToDeskManager) disableToDeskAutoUpdate() {
-	for _, path := range toDeskConfigPaths(m.toDeskDir) {
+func (m *Manager) disableToDeskAutoUpdate() {
+	for _, path := range toDeskConfigPaths(m.toolDir) {
 		if _, err := os.Stat(path); err != nil {
 			continue
 		}

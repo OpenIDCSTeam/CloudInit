@@ -4,11 +4,6 @@
       "name": "MASAIO.cmd",
       "version": "3.11.1",
       "file": "MASAIO.cmd"
-    },
-    {
-      "name": "ToDeskSunDump.exe",
-      "version": "1.0.0",
-      "file": "ToDeskSunDump.exe"
     }
   ]
 }

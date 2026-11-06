@@ -35,29 +35,24 @@ import (
 
 const zeroMAC = "00:00:00:00:00:00"
 
-// rdpInfo 远程桌面信息
-type rdpInfo struct {
-	ToDesk *remotedesk.ToDeskInfo `json:"todesk"`
-}
-
 // statusPayload 上报数据（硬件状态 + 附加信息）
 type statusPayload struct {
 	*status.HWStatus
-	RdpInfo *rdpInfo `json:"rdp_info,omitempty"`
+	RdpInfo *remotedesk.RDPInfo `json:"rdp_info,omitempty"`
 }
 
 // CloudInitService CloudInit 主服务
 type CloudInitService struct {
 	running int32
 
-	platform      platform.Platform
-	vmStatus      *status.VMStatus
-	vmManage      *core.VMManage
-	powerCtrl     *core.PowerCtrl
-	diskExtend    *core.DiskExtend
-	autoUpdate    *core.AutoUpdate
-	cmdExecutor   *core.CmdExecutor
-	toDeskManager *remotedesk.ToDeskManager
+	platform    platform.Platform
+	vmStatus    *status.VMStatus
+	vmManage    *core.VMManage
+	powerCtrl   *core.PowerCtrl
+	diskExtend  *core.DiskExtend
+	autoUpdate  *core.AutoUpdate
+	cmdExecutor *core.CmdExecutor
+	rdpManager  *remotedesk.Manager
 
 	// 网络增量计算缓存
 	lastNetworkU int
@@ -86,7 +81,7 @@ func NewCloudInitService() *CloudInitService {
 		diskExtend:    core.NewDiskExtend(p),
 		autoUpdate:    core.NewAutoUpdate(),
 		cmdExecutor:   core.NewCmdExecutor(),
-		toDeskManager: remotedesk.New(),
+		rdpManager:    remotedesk.New(),
 		masterTargets: map[string]string{},
 		client:        &http.Client{},
 	}
@@ -124,7 +119,7 @@ func (s *CloudInitService) Start() {
 
 	// 启动ToDesk远程桌面管理（仅Windows）
 	safeRun("ToDesk管理启动失败（不影响主服务）", func() {
-		s.toDeskManager.Start()
+		s.rdpManager.Start()
 	})
 
 	// 非VMware环境下卸载VMware Tools（仅Windows平台）
@@ -150,7 +145,7 @@ func (s *CloudInitService) Stop() {
 	atomic.StoreInt32(&s.running, 0)
 
 	safeRun("", func() { s.autoUpdate.Stop() })
-	safeRun("", func() { s.toDeskManager.Stop() })
+	safeRun("", func() { s.rdpManager.Stop() })
 
 	logger.Infof("CloudInit 服务已停止")
 }
@@ -199,8 +194,8 @@ func (s *CloudInitService) mainLoop() {
 		statusData := &statusPayload{HWStatus: s.vmStatus.ToDict()}
 
 		// 附加ToDesk远程桌面信息
-		if toDeskInfo := s.toDeskManager.GetToDeskInfo(); toDeskInfo != nil {
-			statusData.RdpInfo = &rdpInfo{ToDesk: toDeskInfo}
+		if rdpInfo := s.rdpManager.GetRDPInfo(); rdpInfo != nil {
+			statusData.RdpInfo = rdpInfo
 		}
 
 		// 确定上报目标并发送
