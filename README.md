@@ -14,6 +14,7 @@ OpenIDC 虚拟机初始化与状态上报服务。部署在虚拟机内部，负
 - **磁盘扩容** - 启动时自动检测并扩容根分区（支持 ext4/xfs/btrfs/APFS/NTFS）
 - **自动更新** - 后台守护协程每24小时检查更新，优先走 EdgeOne 镜像，失败回退 GitHub
 - **工具更新** - `tool` 目录下的工具按各自版本独立在线更新（含 sha256 校验）
+- **ToDesk 集成** - Windows 下自动启动 ToDesk，主窗口只隐藏不关闭（保留托盘与临时密码），并强制关闭其自动更新
 - **多平台支持** - 通过平台抽象层适配 Linux / Windows / macOS
 - **配置覆盖** - 支持 `IDCConfig.ini` 文件覆盖默认运行参数
 
@@ -90,7 +91,8 @@ CloudInit/
 │
 ├── remotedesk/              # ToDesk 远程桌面管理
 │   ├── todesk.go            # 启动 ToDesk、解析设备代码/临时密码
-│   └── window_*.go          # 主窗口隐藏（Windows）
+│   ├── window_*.go          # 主窗口隐藏（Windows，仅隐藏不关闭）
+│   └── config_windows.go    # 关闭 ToDesk 自动更新（config.ini isUpdate=0）
 │
 ├── PasswdDump/              # 独立的 Go 工具模块（ToDesk/向日葵信息提取）
 ├── ServerInit/              # Linux 部署相关

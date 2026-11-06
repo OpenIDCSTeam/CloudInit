@@ -48,6 +48,7 @@ type ToDeskManager struct {
 	toDeskDir        string
 	dumpExe          string
 	lastStartAttempt time.Time // 上次尝试启动 ToDesk 的时间
+	lastUpdaterKill  time.Time // 上次清理更新进程的时间
 }
 
 const (
@@ -76,6 +77,9 @@ func (m *ToDeskManager) Start() {
 		logger.Infof("[ToDesk] 非Windows平台，跳过ToDesk管理")
 		return
 	}
+
+	// 先关闭 ToDesk 自动更新，避免更新导致窗口关闭、临时密码失效
+	m.disableToDeskAutoUpdate()
 
 	// 启动ToDesk.exe（不阻塞）
 	m.startToDesk()
@@ -154,6 +158,9 @@ func (m *ToDeskManager) refreshLoop() {
 					logger.Errorf("[ToDesk] 获取ToDesk信息异常: %v", r)
 				}
 			}()
+
+			// 每轮复查：ToDesk 可能在运行中把配置改回自动更新
+			m.disableToDeskAutoUpdate()
 			m.fetchToDeskInfo()
 		}()
 
