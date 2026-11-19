@@ -7,3 +7,5 @@ package remotedesk
 func (m *Manager) ensureAnyDesk() string { return "" }
 
 func (m *Manager) ensureAnyDeskPassword(string) string { return "" }
+
+func (m *Manager) launchAnyDesk(string) {}

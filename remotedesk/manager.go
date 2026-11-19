@@ -48,11 +48,13 @@ type Manager struct {
 	refreshInterval int // 基础刷新间隔（秒）
 
 	toolDir          string
+	anyDeskExe       string    // AnyDesk 客户端路径（已安装优先）
 	anyDeskPassword  string    // Agent 设置的 AnyDesk 无人值守密码
 	lastStartAttempt time.Time // 上次尝试启动 ToDesk 的时间
 	lastUpdaterKill  time.Time // 上次清理 ToDesk 更新进程的时间
 	lastTaskScan     time.Time // 上次扫描 ToDesk 更新计划任务的时间
 	lastSlowFetch    time.Time // 上次采集 AnyDesk/向日葵的时间
+	lastPwdAttempt   time.Time // 上次重试写入 AnyDesk 密码的时间
 }
 
 const (
@@ -60,6 +62,8 @@ const (
 	slowFetchInterval = 5 * time.Minute
 	// toDeskRestartWindow 自动拉起 ToDesk 的最小间隔
 	toDeskRestartWindow = 10 * time.Minute
+	// anyDeskPwdRetryWindow 重试写入 AnyDesk 密码的最小间隔
+	anyDeskPwdRetryWindow = 30 * time.Minute
 )
 
 // New 创建远程桌面管理器
@@ -176,15 +180,11 @@ func (m *Manager) startAnyDesk() {
 	password := m.ensureAnyDeskPassword(exePath)
 	m.mu.Lock()
 	m.anyDeskPassword = password
+	m.anyDeskExe = exePath
+	m.lastPwdAttempt = time.Now()
 	m.mu.Unlock()
 
-	cmd := exec.Command(exePath)
-	cmd.Dir = m.toolDir
-	if err := cmd.Start(); err != nil {
-		logger.Debugf("[AnyDesk] 启动客户端失败（可能已作为服务运行）: %v", err)
-	}
-
-	go hideWindowsOfProcess("AnyDesk.exe", 15)
+	m.launchAnyDesk(exePath)
 }
 
 // startSunLogin 启动向日葵（便携版/安装版，不阻塞）
@@ -327,10 +327,18 @@ func (m *Manager) fetchAnyDesk() {
 	password := m.anyDeskPassword
 	m.mu.Unlock()
 
-	// 首次设置失败时重试（AnyDesk 服务可能刚启动）
+	// 首次设置失败时重试（AnyDesk 服务可能刚启动），限频避免反复拉起实例
 	if password == "" {
-		exePath := filepath.Join(m.toolDir, "AnyDesk.exe")
-		if _, err := os.Stat(exePath); err == nil {
+		m.mu.Lock()
+		exePath := m.anyDeskExe
+		retryDue := time.Since(m.lastPwdAttempt) >= anyDeskPwdRetryWindow
+		m.mu.Unlock()
+
+		if exePath != "" && retryDue {
+			m.mu.Lock()
+			m.lastPwdAttempt = time.Now()
+			m.mu.Unlock()
+
 			password = m.ensureAnyDeskPassword(exePath)
 			if password != "" {
 				m.mu.Lock()

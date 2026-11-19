@@ -3,13 +3,10 @@
 package rdpdump
 
 import (
-	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 )
 
 var (
@@ -19,59 +16,22 @@ var (
 
 // AnyDesk 读取 AnyDesk 地址与密码
 func AnyDesk(hintDir string) Info {
-	exePath := locateAnyDeskExe(hintDir)
 	info := Info{
-		Code:     anyDeskID(exePath, hintDir),
+		Code:     anyDeskID(hintDir),
 		Password: anyDeskPassword(hintDir),
 	}
 	return info
 }
 
-// locateAnyDeskExe 查找 AnyDesk.exe
-func locateAnyDeskExe(hintDir string) string {
-	candidates := make([]string, 0, 6)
-	if hintDir != "" {
-		candidates = append(candidates, filepath.Join(hintDir, "AnyDesk.exe"))
-	}
-	for _, dir := range programDirs() {
-		candidates = append(candidates, filepath.Join(dir, "AnyDesk", "AnyDesk.exe"))
-	}
-
-	for _, path := range candidates {
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
-	}
-	return ""
-}
-
-// anyDeskID 通过 CLI 或 system.conf 读取 AnyDesk 地址
-func anyDeskID(exePath, hintDir string) string {
-	if exePath != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		output, err := exec.CommandContext(ctx, exePath, "--get-id").Output()
-		if err == nil {
-			if match := anyDeskIDRe.FindStringSubmatch(string(output)); match != nil {
-				return match[1]
-			}
-		}
-	}
-
-	// 兜底：从配置文件读取 ad.anynet.id
-	paths := make([]string, 0, 3)
-	if hintDir != "" {
-		paths = append(paths, filepath.Join(hintDir, "system.conf"))
-	}
-	if programData := os.Getenv("ProgramData"); programData != "" {
-		paths = append(paths, filepath.Join(programData, "AnyDesk", "system.conf"))
-	}
-	if appData := os.Getenv("APPDATA"); appData != "" {
-		paths = append(paths, filepath.Join(appData, "AnyDesk", "user.conf"))
-	}
-
-	for _, path := range paths {
+// anyDeskID 读取 AnyDesk 地址
+//
+// 只读配置文件里的 ad.anynet.id，不再调用 --get-id：该参数每次都会拉起
+// 一份完整的 AnyDesk 实例（app.service / anynet 全部初始化），与已安装的
+// 服务实例抢占监听套接字和 C:\ProgramData\AnyDesk，日志表现为
+// anynet.relay_connector 反复 bootstrap 后 Fatal Program Failure。
+// 地址在客户端注册后必然落盘，读不到时留空、下一轮再读。
+func anyDeskID(hintDir string) string {
+	for _, path := range anyDeskConfigPaths(hintDir) {
 		values := readINI(path)
 		if id := firstNonEmpty(values["ad.anynet.id"], values["anynet.id"]); id != "" {
 			if match := anyDeskIDRe.FindStringSubmatch(id); match != nil {
@@ -79,8 +39,27 @@ func anyDeskID(exePath, hintDir string) string {
 			}
 		}
 	}
-
 	return ""
+}
+
+// anyDeskConfigPaths 返回待读取的 AnyDesk 配置文件
+//
+// 自定义客户端（AnyDesk-<前缀>）的配置目录同样带前缀，ProgramData 下要通配。
+func anyDeskConfigPaths(hintDir string) []string {
+	paths := make([]string, 0, 6)
+	if hintDir != "" {
+		paths = append(paths, filepath.Join(hintDir, "system.conf"))
+	}
+	if programData := os.Getenv("ProgramData"); programData != "" {
+		paths = append(paths, filepath.Join(programData, "AnyDesk", "system.conf"))
+		if matches, err := filepath.Glob(filepath.Join(programData, "AnyDesk*", "system.conf")); err == nil {
+			paths = append(paths, matches...)
+		}
+	}
+	if appData := os.Getenv("APPDATA"); appData != "" {
+		paths = append(paths, filepath.Join(appData, "AnyDesk", "user.conf"))
+	}
+	return dedupePaths(paths)
 }
 
 // anyDeskPassword 读取 AnyDesk 固定密码
@@ -115,8 +94,11 @@ func anyDeskPassword(hintDir string) string {
 	}
 
 	// 4. system.conf 中的明文密码（通常只有哈希，命中即用）
-	if programData := os.Getenv("ProgramData"); programData != "" {
-		values := readINI(filepath.Join(programData, "AnyDesk", "system.conf"))
+	for _, path := range anyDeskConfigPaths(hintDir) {
+		if strings.HasSuffix(strings.ToLower(path), "user.conf") {
+			continue
+		}
+		values := readINI(path)
 		if password := firstNonEmpty(values["ad.anynet.pwd"]); password != "" {
 			return password
 		}
